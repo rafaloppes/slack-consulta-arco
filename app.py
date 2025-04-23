@@ -1,16 +1,41 @@
 from flask import Flask, request, jsonify
 import requests
 import datetime
+import os
+from hmac import HMAC, compare_digest
+import hashlib
 
 app = Flask(__name__)
 
-# Constantes da API ARCO
-TOKEN_STATICO = "R0VFS0lFLVJBSVpFUy0yMDI0"
-URL_TOKEN = "https://webservice.raizessolucoes.com.br/arco/gerartoken"
-URL_PEDIDOS = "https://webservice.raizessolucoes.com.br/arco/pedidos"
+# Configurações da API ARCO e Slack
+TOKEN_STATICO = os.getenv("ARCO_API_KEY", "R0VFS0lFLVJBSVpFUy0yMDI0")
+URL_TOKEN = os.getenv("ARCO_URL_TOKEN", "https://webservice.raizessolucoes.com.br/arco/gerartoken")
+URL_PEDIDOS = os.getenv("ARCO_URL_PEDIDOS", "https://webservice.raizessolucoes.com.br/arco/pedidos")
+SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
+
+# Verificar assinatura do Slack para segurança
+def verify_slack_signature(request):
+    if not SLACK_SIGNING_SECRET:
+        return True  # Ignora verificação se não configurado (não recomendado para produção)
+    slack_signature = request.headers.get("X-Slack-Signature")
+    slack_timestamp = request.headers.get("X-Slack-Request-Timestamp")
+    if not slack_signature or not slack_timestamp:
+        return False
+    body = request.get_data().decode("utf-8")
+    sig_basestring = f"v0:{slack_timestamp}:{body}".encode("utf-8")
+    computed_sig = "v0=" + HMAC(
+        SLACK_SIGNING_SECRET.encode("utf-8"),
+        sig_basestring,
+        hashlib.sha256
+    ).hexdigest()
+    return compare_digest(computed_sig, slack_signature)
 
 @app.route("/slack/consulta", methods=["POST"])
 def consulta():
+    # Verificar assinatura do Slack
+    if not verify_slack_signature(request):
+        return jsonify({"text": "Assinatura do Slack inválida."}), 403
+
     try:
         texto = request.form.get("text", "")
         partes = texto.split()
@@ -20,7 +45,10 @@ def consulta():
 
         tipo = partes[0]
         token_res = requests.post(URL_TOKEN, json={"token": TOKEN_STATICO})
-        token = token_res.json()["retorno"]["token"]
+        token_data = token_res.json()
+        if token_data["retorno"]["statusintegracao"] != "SUCESSO":
+            return jsonify({"text": f"Erro ao gerar token: {token_data['retorno']['mensagens']['mensagem']}"}), 200
+        token = token_data["retorno"]["token"]
 
         payload = {
             "token": token,
@@ -80,6 +108,6 @@ def consulta():
     except Exception as e:
         return jsonify({"text": f"Erro: {str(e)}"}), 200
 
-
 if __name__ == "__main__":
-    app.run(debug=True)
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
