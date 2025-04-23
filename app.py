@@ -19,26 +19,26 @@ URL_PEDIDOS = os.getenv("ARCO_URL_PEDIDOS", "https://webservice.raizessolucoes.c
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET", "")
 
 # Função de verificação de assinatura comentada para testes
-# def verify_slack_signature(request):
-#     if not SLACK_SIGNING_SECRET:
-#         logger.warning("SLACK_SIGNING_SECRET não configurado, ignorando verificação")
-#         return True
-#     slack_signature = request.headers.get("X-Slack-Signature")
-#     slack_timestamp = request.headers.get("X-Slack-Request-Timestamp")
-#     if not slack_signature or not slack_timestamp:
-#         logger.error("Faltando X-Slack-Signature ou X-Slack-Request-Timestamp")
-#         return False
-#     if abs(time() - float(slack_timestamp)) > 60 * 5:
-#         logger.error("Timestamp do Slack muito antigo")
-#         return False
-#     body = request.get_data().decode("utf-8")
-#     sig_basestring = f"v0:{slack_timestamp}:{body}".encode("utf-8")
-#     computed_sig = "v0=" + HMAC(
-#         SLACK_SIGNING_SECRET.encode("utf-8"),
-#         sig_basestring,
-#         hashlib.sha256
-#     ).hexdigest()
-#     return compare_digest(computed_sig, slack_signature)
+ def verify_slack_signature(request):
+     if not SLACK_SIGNING_SECRET:
+         logger.warning("SLACK_SIGNING_SECRET não configurado, ignorando verificação")
+         return True
+     slack_signature = request.headers.get("X-Slack-Signature")
+     slack_timestamp = request.headers.get("X-Slack-Request-Timestamp")
+     if not slack_signature or not slack_timestamp:
+         logger.error("Faltando X-Slack-Signature ou X-Slack-Request-Timestamp")
+         return False
+     if abs(time() - float(slack_timestamp)) > 60 * 5:
+         logger.error("Timestamp do Slack muito antigo")
+         return False
+     body = request.get_data().decode("utf-8")
+     sig_basestring = f"v0:{slack_timestamp}:{body}".encode("utf-8")
+     computed_sig = "v0=" + HMAC(
+         SLACK_SIGNING_SECRET.encode("utf-8"),
+         sig_basestring,
+         hashlib.sha256
+     ).hexdigest()
+     return compare_digest(computed_sig, slack_signature)
 
 def process_slack_command(response_url, texto):
     logger.info(f"Processando comando: {texto}")
@@ -113,9 +113,9 @@ def process_slack_command(response_url, texto):
 def consulta():
     logger.info("Recebida requisição para /slack/consulta")
     # Verificação de assinatura comentada para testes
-    # if not verify_slack_signature(request):
-    #     logger.error("Assinatura do Slack inválida")
-    #     return jsonify({"text": "Assinatura do Slack inválida."}), 403
+     if not verify_slack_signature(request):
+         logger.error("Assinatura do Slack inválida")
+         return jsonify({"text": "Assinatura do Slack inválida."}), 403
 
     try:
         form_data = parse_qs(request.get_data().decode("utf-8"))
