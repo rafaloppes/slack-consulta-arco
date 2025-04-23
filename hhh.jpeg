@@ -1,7 +1,0 @@
-services:
-  - type: web
-    name: slack-consulta-arco
-    env: python
-    buildCommand: ""
-    startCommand: "python3 app.py"
-    plan: free
