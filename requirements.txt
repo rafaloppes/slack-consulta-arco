@@ -1,3 +1,4 @@
 Flask==2.3.2
 requests==2.31.0
-cryptography==42.0.5  # Para verificação segura de assinaturas
+cryptography==42.0.5
+gunicorn==22.0.0
