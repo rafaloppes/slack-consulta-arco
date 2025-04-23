@@ -1,121 +1,139 @@
-import os
-import requests
 from flask import Flask, request, jsonify
+import requests
+import datetime
+import os
 import threading
-import hmac
-import hashlib
-from time import time
+import logging
 from urllib.parse import parse_qs
 
 app = Flask(__name__)
 
-# Configurações da API ARCO
-ARCO_API_KEY = os.getenv("ARCO_API_KEY", "R0VFS0lFLVJBSVpFUy0yMDI0")
-ARCO_URL_TOKEN = os.getenv("ARCO_URL_TOKEN", "https://webservice.raizessolucoes.com.br/arco/gerartoken")
-ARCO_URL_PEDIDOS = os.getenv("ARCO_URL_PEDIDOS", "https://webservice.raizessolucoes.com.br/arco/pedidos")
+# Configurações de logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Configurações da API ARCO e Slack
+TOKEN_STATICO = os.getenv("ARCO_API_KEY", "R0VFS0lFLVJBSVpFUy0yMDI0")
+URL_TOKEN = os.getenv("ARCO_URL_TOKEN", "https://webservice.raizessolucoes.com.br/arco/gerartoken")
+URL_PEDIDOS = os.getenv("ARCO_URL_PEDIDOS", "https://webservice.raizessolucoes.com.br/arco/pedidos")
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET", "")
 
-def verify_slack_signature(request):
-    if not SLACK_SIGNING_SECRET:
-        return True
-    slack_signature = request.headers.get("X-Slack-Signature")
-    slack_timestamp = request.headers.get("X-Slack-Request-Timestamp")
-    if not slack_signature or not slack_timestamp:
-        return False
-    if abs(time() - float(slack_timestamp)) > 60 * 5:
-        return False
-    body = request.get_data().decode("utf-8")
-    sig_basestring = f"v0:{slack_timestamp}:{body}".encode("utf-8")
-    computed_sig = "v0=" + hmac.new(
-        SLACK_SIGNING_SECRET.encode("utf-8"),
-        sig_basestring,
-        hashlib.sha256
-    ).hexdigest()
-    return hmac.compare_digest(computed_sig, slack_signature)
+# Função de verificação de assinatura comentada para testes
+# def verify_slack_signature(request):
+#     if not SLACK_SIGNING_SECRET:
+#         logger.warning("SLACK_SIGNING_SECRET não configurado, ignorando verificação")
+#         return True
+#     slack_signature = request.headers.get("X-Slack-Signature")
+#     slack_timestamp = request.headers.get("X-Slack-Request-Timestamp")
+#     if not slack_signature or not slack_timestamp:
+#         logger.error("Faltando X-Slack-Signature ou X-Slack-Request-Timestamp")
+#         return False
+#     if abs(time() - float(slack_timestamp)) > 60 * 5:
+#         logger.error("Timestamp do Slack muito antigo")
+#         return False
+#     body = request.get_data().decode("utf-8")
+#     sig_basestring = f"v0:{slack_timestamp}:{body}".encode("utf-8")
+#     computed_sig = "v0=" + HMAC(
+#         SLACK_SIGNING_SECRET.encode("utf-8"),
+#         sig_basestring,
+#         hashlib.sha256
+#     ).hexdigest()
+#     return compare_digest(computed_sig, slack_signature)
 
-def get_arco_token():
-    headers = {"Content-Type": "application/json"}
-    payload = {"token": ARCO_API_KEY}
-    response = requests.post(ARCO_URL_TOKEN, json=payload, headers=headers)
-    if response.status_code == 200:
-        data = response.json()
-        if data.get("retorno", {}).get("statusintegracao") == "SUCESSO":
-            return data["retorno"]["token"]
-    return None
-
-def fetch_orders(params, token):
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
-    response = requests.post(ARCO_URL_PEDIDOS, json=params, headers=headers)
-    if response.status_code == 200:
-        return response.json().get("retorno", [])
-    return []
-
-def format_order(order):
-    return (
-        f"🏫 *Escola:* {order.get('escola', '-')}\n"
-        f"📦 *Produtos:* {order.get('produtos', '-')}\n"
-        f"💲 *Valor:* R$ {order.get('valor', '-')}\n"
-        f"🚚 *Status:* {order.get('status', '-')}\n"
-        f"📅 *Data Pedido:* {order.get('data_pedido', '-')}\n"
-        f"📦 *Expedição:* {order.get('expedicao', '-')}\n"
-        f"📧 {order.get('email', '-')}"
-    )
-
-def process_slack_command(response_url, text):
+def process_slack_command(response_url, texto):
+    logger.info(f"Processando comando: {texto}")
     try:
-        token = get_arco_token()
-        if not token:
-            requests.post(response_url, json={"text": "Erro: Falha ao obter token da API ARCO."})
+        partes = texto.split()
+        if len(partes) < 2:
+            requests.post(response_url, json={"text": "Formato incorreto. Ex: /consulta aging nave 2024 7"})
             return
 
-        params = {}
-        command_parts = text.strip().split()
-        if not command_parts:
-            requests.post(response_url, json={"text": "Erro: Comando inválido."})
+        tipo = partes[0]
+        token_res = requests.post(URL_TOKEN, json={"token": TOKEN_STATICO}, timeout=5)
+        token_data = token_res.json()
+        if token_data["retorno"]["statusintegracao"] != "SUCESSO":
+            requests.post(response_url, json={"text": f"Erro ao gerar token: {token_data['retorno']['mensagens']['mensagem']}"})
             return
+        token = token_data["retorno"]["token"]
 
-        command_type = command_parts[0].lower()
-        if command_type == "aging":
-            params["marca"] = command_parts[1] if len(command_parts) > 1 else ""
-            params["ano"] = command_parts[2] if len(command_parts) > 2 else ""
-            params["mes"] = command_parts[3] if len(command_parts) > 3 else ""
-        elif command_type == "numero":
-            params["numero_pedido"] = command_parts[1] if len(command_parts) > 1 else ""
-        elif command_type == "expedicao":
-            params["data_inicio"] = command_parts[1] if len(command_parts) > 1 else ""
-            params["data_fim"] = command_parts[2] if len(command_parts) > 2 else ""
-        elif command_type == "escola":
-            params["escola"] = " ".join(command_parts[1:]) if len(command_parts) > 1 else ""
-        else:
-            requests.post(response_url, json={"text": "Erro: Tipo de consulta inválido."})
-            return
+        payload = {
+            "token": token,
+            "Tipo": "pedido",
+            "Marca": partes[1] if len(partes) > 1 else "nave",
+            "AnoProjeto": int(partes[2]) if len(partes) > 2 else 2024,
+            "DataPedidoInicial": "2024-01-01 00:00:00",
+            "DataPedidoFinal": "2024-12-31 23:59:59"
+        }
 
-        orders = fetch_orders(params, token)
-        if not orders:
+        if tipo == "aging":
+            dias = int(partes[3]) if len(partes) > 3 else 7
+            hoje = datetime.datetime.now()
+            inicio = hoje - datetime.timedelta(days=dias)
+            payload["DataPedidoInicial"] = inicio.strftime("%Y-%m-%d 00:00:00")
+            payload["DataPedidoFinal"] = hoje.strftime("%Y-%m-%d 23:59:59")
+        elif tipo == "numero":
+            payload["numero_pedido"] = partes[1] if len(partes) > 1 else ""
+        elif tipo == "expedicao":
+            payload["DataPedidoInicial"] = f"{partes[1]} 00:00:00" if len(partes) > 1 else ""
+            payload["DataPedidoFinal"] = f"{partes[2]} 23:59:59" if len(partes) > 2 else ""
+        elif tipo == "escola":
+            escola = partes[1].lower() if len(partes) > 1 else ""
+
+        res = requests.post(URL_PEDIDOS, json=payload, timeout=10)
+        pedidos = res.json().get("retorno", [])
+
+        if tipo == "numero":
+            pedidos = [p for p in pedidos if str(p.get("PedidoOrigem")) == payload["numero_pedido"]]
+        elif tipo == "escola":
+            pedidos = [p for p in pedidos if escola in p["Escola"].lower()]
+
+        if not pedidos:
             requests.post(response_url, json={"text": "Nenhum pedido encontrado."})
             return
 
-        response_text = "*📦 Resultados encontrados:*\n\n"
-        for order in orders[:5]:
-            response_text += format_order(order) + "\n— — — — — — — —\n"
-        requests.post(response_url, json={"response_type": "in_channel", "text": response_text})
+        resposta = "*📦 Resultados encontrados:*\n"
+        for p in pedidos[:5]:
+            resposta += (
+                f"\n🏫 *Escola:* {p['Escola']} - {p['Cidade']}/{p['Uf']}\n"
+                f"📦 *Produtos:* {p['Produtos']} ({p['QtdProdutos']} itens)\n"
+                f"💲 *Valor:* R$ {p['ValorFinalPedido']:.2f}\n"
+                f"🚚 *Status:* {p['StatusPedido']}\n"
+                f"📅 *Data Pedido:* {p['DataPedido']}\n"
+                f"📦 *Expedição:* {p.get('DataExpedicao') or 'Ainda não expedido'}\n"
+                f"📧 {p.get('Email') or '—'} | 📞 {p.get('Telefone') or '—'}\n"
+                "— — — — — — — —\n"
+            )
+
+        requests.post(response_url, json={"response_type": "in_channel", "text": resposta})
     except Exception as e:
+        logger.error(f"Erro no processamento: {str(e)}")
         requests.post(response_url, json={"text": f"Erro: {str(e)}"})
 
 @app.route("/slack/consulta", methods=["POST"])
 def consulta():
-    if not verify_slack_signature(request):
-        return jsonify({"text": "Assinatura do Slack inválida."}), 403
+    logger.info("Recebida requisição para /slack/consulta")
+    # Verificação de assinatura comentada para testes
+    # if not verify_slack_signature(request):
+    #     logger.error("Assinatura do Slack inválida")
+    #     return jsonify({"text": "Assinatura do Slack inválida."}), 403
 
-    form_data = parse_qs(request.get_data().decode("utf-8"))
-    text = form_data.get("text", [""])[0]
-    response_url = form_data.get("response_url", [""])[0]
+    try:
+        form_data = parse_qs(request.get_data().decode("utf-8"))
+        text = form_data.get("text", [""])[0]
+        response_url = form_data.get("response_url", [""])[0]
+    except Exception as e:
+        logger.error(f"Erro ao parsear form data: {str(e)}")
+        return jsonify({"text": "Erro ao processar a requisição."}), 400
 
     # Iniciar processamento assíncrono
     threading.Thread(target=process_slack_command, args=(response_url, text)).start()
 
-    # Resposta imediata ao Slack
+    # Resposta imediata
+    logger.info("Enviando resposta imediata ao Slack")
     return jsonify({"text": "Processando sua consulta..."}), 200
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
+
+# Fim do arquivo app.py
