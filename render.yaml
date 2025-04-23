@@ -3,5 +3,5 @@ services:
     name: slack-consulta-arco
     env: python
     buildCommand: ""
-    startCommand: "python app.py"
+    startCommand: "python3 app.py"
     plan: free
