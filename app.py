@@ -5,6 +5,10 @@ import os
 import threading
 import logging
 from urllib.parse import parse_qs
+import hashlib
+import hmac
+from time import time
+from hmac import compare_digest
 
 app = Flask(__name__)
 
@@ -18,28 +22,33 @@ URL_TOKEN = os.getenv("ARCO_URL_TOKEN", "https://webservice.raizessolucoes.com.b
 URL_PEDIDOS = os.getenv("ARCO_URL_PEDIDOS", "https://webservice.raizessolucoes.com.br/arco/pedidos")
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET", "")
 
-# Função de verificação de assinatura comentada para testes
- def verify_slack_signature(request):
-     if not SLACK_SIGNING_SECRET:
-         logger.warning("SLACK_SIGNING_SECRET não configurado, ignorando verificação")
-         return True
-     slack_signature = request.headers.get("X-Slack-Signature")
-     slack_timestamp = request.headers.get("X-Slack-Request-Timestamp")
-     if not slack_signature or not slack_timestamp:
-         logger.error("Faltando X-Slack-Signature ou X-Slack-Request-Timestamp")
-         return False
-     if abs(time() - float(slack_timestamp)) > 60 * 5:
-         logger.error("Timestamp do Slack muito antigo")
-         return False
-     body = request.get_data().decode("utf-8")
-     sig_basestring = f"v0:{slack_timestamp}:{body}".encode("utf-8")
-     computed_sig = "v0=" + HMAC(
-         SLACK_SIGNING_SECRET.encode("utf-8"),
-         sig_basestring,
-         hashlib.sha256
-     ).hexdigest()
-     return compare_digest(computed_sig, slack_signature)
+# Verificação da assinatura do Slack
+def verify_slack_signature(request):
+    if not SLACK_SIGNING_SECRET:
+        logger.warning("SLACK_SIGNING_SECRET não configurado, ignorando verificação")
+        return True
 
+    slack_signature = request.headers.get("X-Slack-Signature")
+    slack_timestamp = request.headers.get("X-Slack-Request-Timestamp")
+    if not slack_signature or not slack_timestamp:
+        logger.error("Faltando X-Slack-Signature ou X-Slack-Request-Timestamp")
+        return False
+
+    if abs(time() - float(slack_timestamp)) > 60 * 5:
+        logger.error("Timestamp do Slack muito antigo")
+        return False
+
+    body = request.get_data().decode("utf-8")
+    sig_basestring = f"v0:{slack_timestamp}:{body}".encode("utf-8")
+    computed_sig = "v0=" + hmac.new(
+        SLACK_SIGNING_SECRET.encode("utf-8"),
+        sig_basestring,
+        hashlib.sha256
+    ).hexdigest()
+
+    return compare_digest(computed_sig, slack_signature)
+
+# Lógica do comando Slack
 def process_slack_command(response_url, texto):
     logger.info(f"Processando comando: {texto}")
     try:
@@ -52,7 +61,7 @@ def process_slack_command(response_url, texto):
         token_res = requests.post(URL_TOKEN, json={"token": TOKEN_STATICO}, timeout=5)
         token_data = token_res.json()
         if token_data["retorno"]["statusintegracao"] != "SUCESSO":
-            requests.post(response_url, json={"text": f"Erro ao gerar token: {token_data['retorno']['mensagens']['mensagem']}"})
+            requests.post(response_url, json={"text": f"Erro ao gerar token: {token_data['retorno']['mensagens']['mensagem']}"} )
             return
         token = token_data["retorno"]["token"]
 
@@ -109,13 +118,14 @@ def process_slack_command(response_url, texto):
         logger.error(f"Erro no processamento: {str(e)}")
         requests.post(response_url, json={"text": f"Erro: {str(e)}"})
 
+# Endpoint que recebe a chamada do Slack
 @app.route("/slack/consulta", methods=["POST"])
 def consulta():
     logger.info("Recebida requisição para /slack/consulta")
-    # Verificação de assinatura comentada para testes
-     if not verify_slack_signature(request):
-         logger.error("Assinatura do Slack inválida")
-         return jsonify({"text": "Assinatura do Slack inválida."}), 403
+    
+    if not verify_slack_signature(request):
+        logger.error("Assinatura do Slack inválida")
+        return jsonify({"text": "Assinatura do Slack inválida."}), 403
 
     try:
         form_data = parse_qs(request.get_data().decode("utf-8"))
@@ -125,15 +135,14 @@ def consulta():
         logger.error(f"Erro ao parsear form data: {str(e)}")
         return jsonify({"text": "Erro ao processar a requisição."}), 400
 
-    # Iniciar processamento assíncrono
+    # Iniciar processamento em segundo plano
     threading.Thread(target=process_slack_command, args=(response_url, text)).start()
 
-    # Resposta imediata
+    # Resposta imediata para evitar timeout no Slack
     logger.info("Enviando resposta imediata ao Slack")
     return jsonify({"text": "Processando sua consulta..."}), 200
 
+# Rodar servidor
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
-
-# Fim do arquivo app.py
