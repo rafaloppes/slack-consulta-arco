@@ -93,7 +93,7 @@ def process_slack_command(response_url, texto):
             "token": token,
             "Tipo": "pedido",
             "Marca": partes[1].strip() if len(partes) > 1 else "nave",
-            "AnoProjeto": int(partes[2]) if len(partes) > 2 else 2025,  # Alterado para 2025 (ou para datetime.datetime.now().year para o ano atual)
+            "AnoProjeto": int(partes[2]) if len(partes) > 2 else 2025,  # Alterado para 2025
         }
 
         if tipo == "aging":
