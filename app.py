@@ -7,7 +7,7 @@ import logging
 from urllib.parse import parse_qs
 import hashlib
 import hmac
-from time import time  # Importante: Garante que time está corretamente importado
+from time import time
 from hmac import compare_digest
 import json
 import random
@@ -51,25 +51,14 @@ def verify_slack_signature(request):
     return compare_digest(computed_sig, slack_signature)
 
 # Função para consultar a API com retry e backoff
-def consultar_api_com_retry(url, payload, max_tentativas=5, intervalo_inicial=1, intervalo_maximo=60):
-    tentativa = 0
-    while tentativa < max_tentativas:
-        tentativa += 1
-        try:
-            res = requests.post(url, json=payload, timeout=10)
-            res.raise_for_status()  # Levanta exceção para códigos de status ruins (4xx ou 5xx)
-            logger.info(f"Tentativa {tentativa}: Sucesso!")
-            return res.json()
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"Tentativa {tentativa}/{max_tentativas} falhou: {e}")
-            if isinstance(e, requests.exceptions.HTTPError) and e.response.status_code == 429:
-                logger.warning("Recebemos um erro 429 (Too Many Requests).")
-
-            espera = min(intervalo_inicial * (2 ** (tentativa - 1)) + random.random(), intervalo_maximo)
-            logger.info(f"Tentativa {tentativa}: Falha. Próxima tentativa em {espera:.2f} segundos.")
-            time.sleep(espera)  # Garanta que time.sleep() está sendo chamado corretamente
-    logger.error(f"Falha ao consultar a API após {max_tentativas} tentativas.")
-    raise Exception("Falha ao consultar a API ARCO.")
+def consultar_api_com_retry(url, payload, max_tentativas=1):  # Apenas 1 tentativa
+    try:
+        res = requests.post(url, json=payload, timeout=10)
+        res.raise_for_status()
+        return res.json()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Erro ao consultar a API de Pedidos: {e}")
+        raise Exception("Falha ao consultar a API ARCO.") from e
 
 # Lógica do comando Slack
 @app.route("/slack/consulta", methods=["POST"])
