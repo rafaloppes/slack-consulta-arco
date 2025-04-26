@@ -51,39 +51,27 @@ def verify_slack_signature(request):
     return compare_digest(computed_sig, slack_signature)
 
 # Função para consultar a API com retry e backoff
-def consultar_api_com_retry(url, payload, max_tentativas=1):  # Apenas 1 tentativa
-    try:
-        res = requests.post(url, json=payload, timeout=10)
-        res.raise_for_status()
-        return res.json()
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Erro ao consultar a API de Pedidos: {e}")
-        raise Exception("Falha ao consultar a API ARCO.") from e
+def consultar_api_com_retry(url, payload, max_tentativas=5, intervalo_inicial=1, intervalo_maximo=60):
+    tentativa = 0
+    while tentativa < max_tentativas:
+        tentativa += 1
+        try:
+            res = requests.post(url, json=payload, timeout=10)
+            res.raise_for_status()  # Levanta exceção para códigos de status ruins (4xx ou 5xx)
+            logger.info(f"Tentativa {tentativa}: Sucesso!")
+            return res.json()
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Tentativa {tentativa}/{max_tentativas} falhou: {e}")
+            if isinstance(e, requests.exceptions.HTTPError) and e.response.status_code == 429:
+                logger.warning("Recebemos um erro 429 (Too Many Requests).")
+
+            espera = min(intervalo_inicial * (2 ** (tentativa - 1)) + random.random(), intervalo_maximo)
+            logger.info(f"Tentativa {tentativa}: Falha. Próxima tentativa em {espera:.2f} segundos.")
+            time.sleep(espera)  # Garanta que time.sleep() está sendo chamado corretamente
+    logger.error(f"Falha ao consultar a API após {max_tentativas} tentativas.")
+    raise Exception("Falha ao consultar a API ARCO.")
 
 # Lógica do comando Slack
-@app.route("/slack/consulta", methods=["POST"])
-def consulta():
-    logger.info("Recebida requisição para /slack/consulta")
-    
-    if not verify_slack_signature(request):
-        logger.error("Assinatura do Slack inválida")
-        return jsonify({"text": "Assinatura do Slack inválida."}), 403
-
-    try:
-        form_data = parse_qs(request.get_data().decode("utf-8"))
-        text = form_data.get("text", [""])[0]
-        response_url = form_data.get("response_url", [""])[0]
-    except Exception as e:
-        logger.error(f"Erro ao parsear form data: {str(e)}")
-        return jsonify({"text": "Erro ao processar a requisição."}), 400
-
-    # Iniciar processamento em segundo plano
-    threading.Thread(target=process_slack_command, args=(response_url, text)).start()
-
-    # Resposta imediata para evitar timeout no Slack
-    logger.info("Enviando resposta imediata ao Slack")
-    return jsonify({"text": "Processando sua consulta..."}), 200
-
 def process_slack_command(response_url, texto):
     logger.info(f"Processando comando: {texto}")
     try:
