@@ -10,6 +10,7 @@ import hmac
 from time import time
 from hmac import compare_digest
 import json
+import random  # Para o jitter
 
 app = Flask(__name__)
 
@@ -48,6 +49,27 @@ def verify_slack_signature(request):
     ).hexdigest()
 
     return compare_digest(computed_sig, slack_signature)
+
+# Função para consultar a API com retry e backoff
+def consultar_api_com_retry(url, payload, max_tentativas=5, intervalo_inicial=1, intervalo_maximo=60):
+    tentativa = 0
+    while tentativa < max_tentativas:
+        tentativa += 1
+        try:
+            res = requests.post(url, json=payload, timeout=10)
+            res.raise_for_status()  # Levanta exceção para códigos de status ruins (4xx ou 5xx)
+            logger.info(f"Tentativa {tentativa}: Sucesso!")
+            return res.json()
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Tentativa {tentativa}/{max_tentativas} falhou: {e}")
+            if isinstance(e, requests.exceptions.HTTPError) and e.response.status_code == 429:
+                logger.warning("Recebemos um erro 429 (Too Many Requests).")
+
+            espera = min(intervalo_inicial * (2 ** (tentativa - 1)) + random.random(), intervalo_maximo)
+            logger.info(f"Tentativa {tentativa}: Falha. Próxima tentativa em {espera:.2f} segundos.")
+            time.sleep(espera)
+    logger.error(f"Falha ao consultar a API após {max_tentativas} tentativas.")
+    raise Exception("Falha ao consultar a API ARCO.")
 
 # Lógica do comando Slack
 def process_slack_command(response_url, texto):
@@ -111,23 +133,12 @@ def process_slack_command(response_url, texto):
             escola = partes[1].lower().strip() if len(partes) > 1 else ""
 
         try:
-            res = requests.post(URL_PEDIDOS, json=payload, timeout=10)
-            logger.info(f"Código de Status da API ARCO (Pedidos): {res.status_code}")
-            logger.info(f"Resposta da API ARCO (Pedidos): {res.text}")
-            if res.status_code == 200:  # Verifique se o código de status é 200
-                pedidos = res.json()
-                logger.info(f"Dados da Resposta da API ARCO (Pedidos): {pedidos}")
-            else:
-                logger.error(f"Erro na API ARCO: Código de Status {res.status_code}")
-                requests.post(response_url, json={"text": f"Erro na API ARCO: Código de Status {res.status_code}"})
-                return
-        except requests.exceptions.RequestException as e:
+            pedidos = consultar_api_com_retry(URL_PEDIDOS, payload)
+            logger.info(f"Dados da Resposta da API ARCO (Pedidos): {pedidos}")
+
+        except Exception as e:
             logger.error(f"Erro ao consultar a API de Pedidos: {e}")
             requests.post(response_url, json={"text": "Erro ao consultar a API ARCO."})
-            return
-        except json.JSONDecodeError as e:
-            logger.error(f"Erro ao decodificar JSON (Pedidos): {e}")
-            requests.post(response_url, json={"text": "Erro ao processar a resposta da API ARCO."})
             return
 
         if tipo == "numero" or (tipo == "consulta" and len(partes) == 2 and partes[1].isdigit()):
