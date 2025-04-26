@@ -7,10 +7,10 @@ import logging
 from urllib.parse import parse_qs
 import hashlib
 import hmac
-from time import time
+from time import time  # Importante: Garante que time está corretamente importado
 from hmac import compare_digest
 import json
-import random  # Para o jitter
+import random
 
 app = Flask(__name__)
 
@@ -67,11 +67,34 @@ def consultar_api_com_retry(url, payload, max_tentativas=5, intervalo_inicial=1,
 
             espera = min(intervalo_inicial * (2 ** (tentativa - 1)) + random.random(), intervalo_maximo)
             logger.info(f"Tentativa {tentativa}: Falha. Próxima tentativa em {espera:.2f} segundos.")
-            time.sleep(espera)
+            time.sleep(espera)  # Garanta que time.sleep() está sendo chamado corretamente
     logger.error(f"Falha ao consultar a API após {max_tentativas} tentativas.")
     raise Exception("Falha ao consultar a API ARCO.")
 
 # Lógica do comando Slack
+@app.route("/slack/consulta", methods=["POST"])
+def consulta():
+    logger.info("Recebida requisição para /slack/consulta")
+    
+    if not verify_slack_signature(request):
+        logger.error("Assinatura do Slack inválida")
+        return jsonify({"text": "Assinatura do Slack inválida."}), 403
+
+    try:
+        form_data = parse_qs(request.get_data().decode("utf-8"))
+        text = form_data.get("text", [""])[0]
+        response_url = form_data.get("response_url", [""])[0]
+    except Exception as e:
+        logger.error(f"Erro ao parsear form data: {str(e)}")
+        return jsonify({"text": "Erro ao processar a requisição."}), 400
+
+    # Iniciar processamento em segundo plano
+    threading.Thread(target=process_slack_command, args=(response_url, text)).start()
+
+    # Resposta imediata para evitar timeout no Slack
+    logger.info("Enviando resposta imediata ao Slack")
+    return jsonify({"text": "Processando sua consulta..."}), 200
+
 def process_slack_command(response_url, texto):
     logger.info(f"Processando comando: {texto}")
     try:
@@ -167,30 +190,6 @@ def process_slack_command(response_url, texto):
     except Exception as e:
         logger.error(f"Erro no processamento: {str(e)}")
         requests.post(response_url, json={"text": f"Erro: {str(e)}"})
-
-# Endpoint que recebe a chamada do Slack
-@app.route("/slack/consulta", methods=["POST"])
-def consulta():
-    logger.info("Recebida requisição para /slack/consulta")
-    
-    if not verify_slack_signature(request):
-        logger.error("Assinatura do Slack inválida")
-        return jsonify({"text": "Assinatura do Slack inválida."}), 403
-
-    try:
-        form_data = parse_qs(request.get_data().decode("utf-8"))
-        text = form_data.get("text", [""])[0]
-        response_url = form_data.get("response_url", [""])[0]
-    except Exception as e:
-        logger.error(f"Erro ao parsear form data: {str(e)}")
-        return jsonify({"text": "Erro ao processar a requisição."}), 400
-
-    # Iniciar processamento em segundo plano
-    threading.Thread(target=process_slack_command, args=(response_url, text)).start()
-
-    # Resposta imediata para evitar timeout no Slack
-    logger.info("Enviando resposta imediata ao Slack")
-    return jsonify({"text": "Processando sua consulta..."}), 200
 
 # Rodar servidor
 if __name__ == "__main__":
