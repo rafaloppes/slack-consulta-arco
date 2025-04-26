@@ -93,7 +93,7 @@ def process_slack_command(response_url, texto):
             "token": token,
             "Tipo": "pedido",
             "Marca": partes[1].strip() if len(partes) > 1 else "nave",
-            "AnoProjeto": datetime.datetime.now().year if len(partes) > 2 else datetime.datetime.now().year, # Modificado
+            "AnoProjeto": int(partes[2]) if len(partes) > 2 else 2025,  # Alterado para 2025
             "DataPedidoInicial": "2024-01-01 00:00:00",
             "DataPedidoFinal": "2024-12-31 23:59:59"
         }
