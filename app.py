@@ -60,11 +60,11 @@ def process_slack_command(response_url, texto):
 
         tipo = partes[0].strip()
         token_res = requests.post(URL_TOKEN, json={"token": TOKEN_STATICO}, timeout=5)
-        logger.info(f"Resposta da API ARCO (Token): {token_res.text}")  # Adicione este log
+        logger.info(f"Resposta da API ARCO (Token): {token_res.text}")
         try:
             token_data = token_res.json()
-            logger.info(f"Dados da Resposta da API ARCO (Token): {token_data}") # Adicione este log
-            if token_data["retorno"]["statusintegracao"] != "SUCESSO":
+            logger.info(f"Dados da Resposta da API ARCO (Token): {token_data}")
+            if token_data["retorno"]["statusIntegracao"] != "SUCESSO":
                 requests.post(response_url, json={"text": f"Erro ao gerar token: {token_data['retorno']['mensagens']['mensagem']}"} )
                 return
             token = token_data["retorno"]["token"]
@@ -80,8 +80,8 @@ def process_slack_command(response_url, texto):
         payload = {
             "token": token,
             "Tipo": "pedido",
-            "Marca": "nave",  # Valor padrão
-            "AnoProjeto": 2024, # Valor padrão
+            "Marca": "nave",
+            "AnoProjeto": 2024,
             "DataPedidoInicial": "2024-01-01 00:00:00",
             "DataPedidoFinal": "2024-12-31 23:59:59"
         }
@@ -102,8 +102,19 @@ def process_slack_command(response_url, texto):
         elif tipo == "consulta" and len(partes) == 2 and partes[1].isdigit():
             payload["numero_pedido"] = partes[1]
 
-        res = requests.post(URL_PEDIDOS, json=payload, timeout=10)
-        pedidos = res.json().get("retorno", [])
+        try:  # Adicionado try...except para a chamada da API de pedidos
+            res = requests.post(URL_PEDIDOS, json=payload, timeout=10)
+            logger.info(f"Resposta da API ARCO (Pedidos): {res.text}")
+            pedidos = res.json().get("retorno", [])
+            logger.info(f"Dados da Resposta da API ARCO (Pedidos): {pedidos}")
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Erro ao consultar a API de Pedidos: {e}")
+            requests.post(response_url, json={"text": "Erro ao consultar a API ARCO."})
+            return
+        except json.JSONDecodeError as e:
+            logger.error(f"Erro ao decodificar JSON (Pedidos): {e}")
+            requests.post(response_url, json={"text": "Erro ao processar a resposta da API ARCO."})
+            return
 
         if tipo == "numero" or (tipo == "consulta" and len(partes) == 2 and partes[1].isdigit()):
             pedidos = [p for p in pedidos if str(p.get("PedidoOrigem")) == payload["numero_pedido"]]
