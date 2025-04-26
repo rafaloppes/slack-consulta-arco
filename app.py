@@ -9,6 +9,7 @@ import hashlib
 import hmac
 from time import time
 from hmac import compare_digest
+import json  # Importe o módulo json
 
 app = Flask(__name__)
 
@@ -52,24 +53,35 @@ def verify_slack_signature(request):
 def process_slack_command(response_url, texto):
     logger.info(f"Processando comando: {texto}")
     try:
-        partes = texto.split()
+        partes = texto.strip().split()
         if len(partes) < 2:
-            requests.post(response_url, json={"text": "Formato incorreto. Ex: /consulta aging nave 2024 7"})
+            requests.post(response_url, json={"text": "Formato incorreto. Ex: /consulta aging nave 2024 7 ou /consulta numero 579744"})
             return
 
-        tipo = partes[0]
+        tipo = partes[0].strip()
         token_res = requests.post(URL_TOKEN, json={"token": TOKEN_STATICO}, timeout=5)
-        token_data = token_res.json()
-        if token_data["retorno"]["statusintegracao"] != "SUCESSO":
-            requests.post(response_url, json={"text": f"Erro ao gerar token: {token_data['retorno']['mensagens']['mensagem']}"} )
+        logger.info(f"Resposta da API ARCO (Token): {token_res.text}")  # Adicione este log
+        try:
+            token_data = token_res.json()
+            logger.info(f"Dados da Resposta da API ARCO (Token): {token_data}") # Adicione este log
+            if token_data["retorno"]["statusintegracao"] != "SUCESSO":
+                requests.post(response_url, json={"text": f"Erro ao gerar token: {token_data['retorno']['mensagens']['mensagem']}"} )
+                return
+            token = token_data["retorno"]["token"]
+        except json.JSONDecodeError as e:
+            logger.error(f"Erro ao decodificar JSON: {e}")
+            requests.post(response_url, json={"text": "Erro ao processar a resposta da API ARCO."})
             return
-        token = token_data["retorno"]["token"]
+        except KeyError as e:
+            logger.error(f"Erro ao acessar campo na resposta: {e}")
+            requests.post(response_url, json={"text": "Erro ao processar a resposta da API ARCO."})
+            return
 
         payload = {
             "token": token,
             "Tipo": "pedido",
-            "Marca": partes[1] if len(partes) > 1 else "nave",
-            "AnoProjeto": int(partes[2]) if len(partes) > 2 else 2024,
+            "Marca": "nave",  # Valor padrão
+            "AnoProjeto": 2024, # Valor padrão
             "DataPedidoInicial": "2024-01-01 00:00:00",
             "DataPedidoFinal": "2024-12-31 23:59:59"
         }
@@ -81,17 +93,19 @@ def process_slack_command(response_url, texto):
             payload["DataPedidoInicial"] = inicio.strftime("%Y-%m-%d 00:00:00")
             payload["DataPedidoFinal"] = hoje.strftime("%Y-%m-%d 23:59:59")
         elif tipo == "numero":
-            payload["numero_pedido"] = partes[1] if len(partes) > 1 else ""
+            payload["numero_pedido"] = partes[1].strip() if len(partes) > 1 else ""
         elif tipo == "expedicao":
-            payload["DataPedidoInicial"] = f"{partes[1]} 00:00:00" if len(partes) > 1 else ""
-            payload["DataPedidoFinal"] = f"{partes[2]} 23:59:59" if len(partes) > 2 else ""
+            payload["DataPedidoInicial"] = f"{partes[1].strip()} 00:00:00" if len(partes) > 1 else ""
+            payload["DataPedidoFinal"] = f"{partes[2].strip()} 23:59:59" if len(partes) > 2 else ""
         elif tipo == "escola":
-            escola = partes[1].lower() if len(partes) > 1 else ""
+            escola = partes[1].lower().strip() if len(partes) > 1 else ""
+        elif tipo == "consulta" and len(partes) == 2 and partes[1].isdigit():
+            payload["numero_pedido"] = partes[1]
 
-        res = requests.post(URL_PEDIDOS, json=payload, timeout=30)
+        res = requests.post(URL_PEDIDOS, json=payload, timeout=10)
         pedidos = res.json().get("retorno", [])
 
-        if tipo == "numero":
+        if tipo == "numero" or (tipo == "consulta" and len(partes) == 2 and partes[1].isdigit()):
             pedidos = [p for p in pedidos if str(p.get("PedidoOrigem")) == payload["numero_pedido"]]
         elif tipo == "escola":
             pedidos = [p for p in pedidos if escola in p["Escola"].lower()]
