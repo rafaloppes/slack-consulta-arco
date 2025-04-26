@@ -93,9 +93,7 @@ def process_slack_command(response_url, texto):
             "token": token,
             "Tipo": "pedido",
             "Marca": partes[1].strip() if len(partes) > 1 else "nave",
-            "AnoProjeto": int(partes[2]) if len(partes) > 2 else 2025,  # Alterado para 2025
-            "DataPedidoInicial": "2024-01-01 00:00:00",
-            "DataPedidoFinal": "2024-12-31 23:59:59"
+            "AnoProjeto": int(partes[2]) if len(partes) > 2 else 2025,  # Alterado para 2025 (ou para datetime.datetime.now().year para o ano atual)
         }
 
         if tipo == "aging":
@@ -104,21 +102,25 @@ def process_slack_command(response_url, texto):
             inicio = hoje - datetime.timedelta(days=dias)
             payload["DataPedidoInicial"] = inicio.strftime("%Y-%m-%d 00:00:00")
             payload["DataPedidoFinal"] = hoje.strftime("%Y-%m-%d 23:59:59")
-        elif tipo == "numero":
-            payload["numero_pedido"] = partes[1].strip() if len(partes) > 1 else ""
+        elif tipo == "numero" or (tipo == "consulta" and len(partes) == 2 and partes[1].isdigit()):
+            payload["numero_pedido"] = partes[1].strip() if len(partes) > 1 else partes[1]
         elif tipo == "expedicao":
             payload["DataPedidoInicial"] = f"{partes[1].strip()} 00:00:00" if len(partes) > 1 else ""
             payload["DataPedidoFinal"] = f"{partes[2].strip()} 23:59:59" if len(partes) > 2 else ""
         elif tipo == "escola":
             escola = partes[1].lower().strip() if len(partes) > 1 else ""
-        elif tipo == "consulta" and len(partes) == 2 and partes[1].isdigit():
-            payload["numero_pedido"] = partes[1]
 
         try:
             res = requests.post(URL_PEDIDOS, json=payload, timeout=10)
+            logger.info(f"Código de Status da API ARCO (Pedidos): {res.status_code}")
             logger.info(f"Resposta da API ARCO (Pedidos): {res.text}")
-            pedidos = res.json()
-            logger.info(f"Dados da Resposta da API ARCO (Pedidos): {pedidos}")
+            if res.status_code == 200:  # Verifique se o código de status é 200
+                pedidos = res.json()
+                logger.info(f"Dados da Resposta da API ARCO (Pedidos): {pedidos}")
+            else:
+                logger.error(f"Erro na API ARCO: Código de Status {res.status_code}")
+                requests.post(response_url, json={"text": f"Erro na API ARCO: Código de Status {res.status_code}"})
+                return
         except requests.exceptions.RequestException as e:
             logger.error(f"Erro ao consultar a API de Pedidos: {e}")
             requests.post(response_url, json={"text": "Erro ao consultar a API ARCO."})
