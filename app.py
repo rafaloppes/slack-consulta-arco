@@ -9,7 +9,7 @@ import hashlib
 import hmac
 from time import time
 from hmac import compare_digest
-import json  # Importe o módulo json
+import json
 
 app = Flask(__name__)
 
@@ -64,7 +64,7 @@ def process_slack_command(response_url, texto):
         try:
             token_data = token_res.json()
             logger.info(f"Dados da Resposta da API ARCO (Token): {token_data}")
-            if token_data["retorno"]["statusIntegracao"] != "SUCESSO":
+            if token_data["retorno"]["statusintegracao"] != "SUCESSO":
                 requests.post(response_url, json={"text": f"Erro ao gerar token: {token_data['retorno']['mensagens']['mensagem']}"} )
                 return
             token = token_data["retorno"]["token"]
@@ -102,10 +102,10 @@ def process_slack_command(response_url, texto):
         elif tipo == "consulta" and len(partes) == 2 and partes[1].isdigit():
             payload["numero_pedido"] = partes[1]
 
-        try:  # Adicionado try...except para a chamada da API de pedidos
+        try:
             res = requests.post(URL_PEDIDOS, json=payload, timeout=10)
             logger.info(f"Resposta da API ARCO (Pedidos): {res.text}")
-            pedidos = res.json().get("retorno", [])
+            pedidos = res.json()  # Corrigido aqui!
             logger.info(f"Dados da Resposta da API ARCO (Pedidos): {pedidos}")
         except requests.exceptions.RequestException as e:
             logger.error(f"Erro ao consultar a API de Pedidos: {e}")
