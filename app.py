@@ -66,10 +66,20 @@ def process_slack_command(response_url, texto):
             logger.info(f"Dados da Resposta da API ARCO (Token): {token_data}")
             logger.info(f"Tipo de token_data: {type(token_data)}")
             logger.info(f"Conteúdo de token_data: {token_data}")
-            if token_data["retorno"]["statusintegracao"] != "SUCESSO":
+
+            if "retorno" in token_data and \
+               "statusintegracao" in token_data["retorno"] and \
+               token_data["retorno"]["statusintegracao"] != "SUCESSO":
                 requests.post(response_url, json={"text": f"Erro ao gerar token: {token_data['retorno']['mensagens']['mensagem']}"} )
                 return
-            token = token_data["retorno"]["token"]
+
+            if "retorno" in token_data and "token" in token_data["retorno"]:
+                token = token_data["retorno"]["token"]
+            else:
+                logger.error("Estrutura de resposta da API ARCO (Token) inválida.")
+                requests.post(response_url, json={"text": "Erro ao processar a resposta da API ARCO."})
+                return
+
         except json.JSONDecodeError as e:
             logger.error(f"Erro ao decodificar JSON: {e}")
             requests.post(response_url, json={"text": "Erro ao processar a resposta da API ARCO."})
