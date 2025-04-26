@@ -88,7 +88,7 @@ def process_slack_command(response_url, texto):
         elif tipo == "escola":
             escola = partes[1].lower() if len(partes) > 1 else ""
 
-        res = requests.post(URL_PEDIDOS, json=payload, timeout=10)
+        res = requests.post(URL_PEDIDOS, json=payload, timeout=30)
         pedidos = res.json().get("retorno", [])
 
         if tipo == "numero":
