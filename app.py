@@ -7,6 +7,7 @@ import logging
 from urllib.parse import parse_qs
 import hashlib
 import hmac
+from hmac import compare_digest # Adicione ou modifique esta linha
 from time import time, sleep # Importar sleep também
 import json
 import random
