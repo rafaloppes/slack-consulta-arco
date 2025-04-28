@@ -219,7 +219,7 @@ def process_slack_command(response_url, texto_comando_slack):
             pedidos_payload["DataPedidoInicial"] = inicio_data.strftime("%Y-%m-%d 00:00:00")
             pedidos_payload["DataPedidoFinal"] = hoje.strftime("%Y-%m-%d 23:59:59")
 
-        elif tipo_comando == "numero":
+        elif tipo_comando == "pedido":
             # /consulta numero [marca] [ano] [numero_pedido]
             if len(partes) < 4:
                  send_slack_message("Comando 'numero' requer marca, ano e número do pedido. Ex: /consulta numero nave 2025 12345")
