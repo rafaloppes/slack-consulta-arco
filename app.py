@@ -167,7 +167,7 @@ def process_slack_command(response_url, texto_comando_slack):
             # Verifica se o statusintegracao é SUCESSO E se o campo 'token' existe e não é vazio
             # Adicionado tratamento para garantir que token_data e token_data.get("retorno") não sejam None
             retorno_data = token_data.get("retorno", {})
-            status_integracao = retorno_data.get("statusIntegracao")
+            status_integracao = retorno_data.get("statusIntegracao") # CORRIGIDO: 'I' maiúsculo
             token_autenticacao = retorno_data.get("token")
             # Tenta obter a mensagem da API, com fallback
             msg_api = retorno_data.get("mensagens", {}).get("mensagem", "Resposta da API de token sem mensagem detalhada.")
@@ -180,7 +180,7 @@ def process_slack_command(response_url, texto_comando_slack):
                 if status_integracao == "SUCESSO" and not token_autenticacao:
                      send_slack_message("Erro interno: A API de token retornou sucesso, mas não forneceu um token válido.")
                 elif status_integracao is None:
-                     send_slack_message(f"Erro na resposta da API de token: Estrutura de resposta inesperada ou 'statusintegracao' ausente. Mensagem da API: {msg_api}")
+                     send_slack_message(f"Erro na resposta da API de token: Estrutura de resposta inesperada ou 'statusIntegracao' ausente. Mensagem da API: {msg_api}")
                 else: # status_integracao é ERRO ou outro valor não SUCESSO
                      send_slack_message(f"Erro ao gerar token da API ARCO. Status API: {status_integracao}. Detalhes: {msg_api}")
                 return # Interrompe o processamento se o token não foi gerado corretamente
@@ -226,14 +226,10 @@ def process_slack_command(response_url, texto_comando_slack):
                  return
             filtro_numero_pedido = partes[3].strip() # Captura o número do pedido
 
-            # A API não filtra por numero_pedido na requisição.
+            # A API não filtra por numero_pedido/idPedido na requisição.
             # Precisamos definir um intervalo de datas amplo o suficiente para pegar o pedido.
-            # Usa o ano do projeto especificado ou um período recente.
-            # Buscar nos últimos 2 anos para cobrir a maioria dos casos razoáveis
-            data_inicio_busca = hoje - datetime.timedelta(days=365*2) # Últimos 2 anos
-            # Opcional: Ajustar para o início do ano do projeto se for mais recente
-            # inicio_ano_proj = datetime.datetime(ano_projeto_api, 1, 1)
-            # data_inicio_busca = min(data_inicio_busca, inicio_ano_proj) # Buscar a partir do início do ano do projeto ou últimos 2 anos, o que for mais recente
+            # Busca nos últimos 2 anos (mantido por enquanto, ajuste pendente)
+            data_inicio_busca = hoje - datetime.timedelta(days=365*2)
 
             pedidos_payload["DataPedidoInicial"] = data_inicio_busca.strftime("%Y-%m-%d 00:00:00")
             pedidos_payload["DataPedidoFinal"] = hoje.strftime("%Y-%m-%d 23:59:59")
@@ -250,7 +246,7 @@ def process_slack_command(response_url, texto_comando_slack):
                 data_final_str = partes[4].strip()
                 # Tenta parsear as datas no formato esperado AAAA-MM-DD
                 datetime.datetime.strptime(data_inicial_str, "%Y-%m-%d")
-                datetime.datetime.strptime(data_final_str, "%Y-%m-%d") # Corrigido para %Y-%m-%d
+                datetime.datetime.strptime(data_final_str, "%Y-%m-%d")
 
                 # Se parseou com sucesso, formata para o padrão da API AAAA-MM-DD HH:mm:ss
                 pedidos_payload["DataPedidoInicial"] = f"{data_inicial_str} 00:00:00"
@@ -271,10 +267,8 @@ def process_slack_command(response_url, texto_comando_slack):
 
             # A API não filtra por nome da escola na requisição.
             # Assim como no filtro por número, precisamos definir um intervalo de datas amplo.
-            data_inicio_busca = hoje - datetime.timedelta(days=365*2) # Últimos 2 anos
-            # Opcional: Ajustar para o início do ano do projeto se for mais recente
-            # inicio_ano_proj = datetime.datetime(ano_projeto_api, 1, 1)
-            # data_inicio_busca = min(data_inicio_busca, inicio_ano_proj)
+            # Busca nos últimos 2 anos (mantido por enquanto, ajuste pendente)
+            data_inicio_busca = hoje - datetime.timedelta(days=365*2)
 
             pedidos_payload["DataPedidoInicial"] = data_inicio_busca.strftime("%Y-%m-%d 00:00:00")
             pedidos_payload["DataPedidoFinal"] = hoje.strftime("%Y-%m-%d 23:59:59")
@@ -312,12 +306,13 @@ def process_slack_command(response_url, texto_comando_slack):
         if filtro_numero_pedido:
              pedidos_filtrados = [
                  p for p in pedidos_filtrados
+                 # ** AJUSTE: Mudar para filtrar pelo idPedido em vez de PedidoOrigem **
                  # Usar .get para evitar KeyError, converter para string para comparação
-                 if str(p.get("PedidoOrigem", "")) == filtro_numero_pedido
+                 if str(p.get("idPedido", "")) == filtro_numero_pedido
              ]
              logger.info(f"Após filtrar por número {filtro_numero_pedido}: {len(pedidos_filtrados)} pedidos encontrados.")
 
-        elif filtro_escola:
+        elif filtro_escola: # <--- Este 'elif' deve alinhar com o 'if' e outros 'elif's
              pedidos_filtrados = [
                  p for p in pedidos_filtrados
                  # Usar .get('Escola', '') para evitar erro se o campo estiver ausente
@@ -336,16 +331,18 @@ def process_slack_command(response_url, texto_comando_slack):
         # mas informa se houver mais.
         for i, p in enumerate(pedidos_filtrados[:5]):
              # Usar .get() com valor padrão para evitar KeyError se um campo estiver ausente
+             # Formatado conforme as últimas preferências do usuário
              resposta += (
-                f"\n🏫 *Escola:* {p.get('Escola', '—')} - {p.get('Cidade', '—')}/{p.get('Uf', '—')}\n"
-                f"📦 *Produtos:* {p.get('Produtos', '—')} ({p.get('Qtd Produtos', '—')} itens)\n"
-                f"💲 *Valor:* R$ {p.get('ValorFinalPedido', 0.0):.2f}\n" # Default 0.0 para formatar float
+                # Incluindo idPedido como primeiro campo
+                f"\n🔢 *Número do pedido:* {p.get('idPedido', '—')}\n"
+                f"🏫 *Escola:* {p.get('Escola', '—')} - {p.get('Cidade', '—')}/{p.get('Uf', '—')}\n"
+                # Removido Qtd Produtos e Produtos
+                # Removido ValorFinalPedido
                 f"🚚 *Status:* {p.get('StatusPedido', '—')}\n"
                 f"📅 *Data Pedido:* {p.get('DataPedido', '—')}\n"
-                # A documentação mostra DataExpedicao como campo.
                 f"📦 *Expedição:* {p.get('DataExpedicao') or 'Ainda não expedido'}\n"
-                f"📧 {p.get('Email') or '—'} | 📞 {p.get('Telefone') or '—'}\n"
-                f"ID Origem: {p.get('PedidoOrigem', '—')}\n" # Adiciona PedidoOrigem conforme visto na doc
+                # Removidos Email e Telefone
+                # Removido PedidoOrigem
                 "— — — — — — — —\n"
             )
 
