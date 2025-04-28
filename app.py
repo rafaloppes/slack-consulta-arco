@@ -256,106 +256,107 @@ def process_slack_command(response_url, texto_comando_slack):
                 pedidos_payload["DataPedidoInicial"] = f"{data_inicial_str} 00:00:00"
                 pedidos_payload["DataPedidoFinal"] = f"{data_final_str} 23:59:59"
 
-            except ValueError:
+            except ValueError: # <--- Except para a validação de data de expedição
                 send_slack_message("Formato de data incorreto para 'expedicao'. Use AAAA-MM-DD.")
                 return
+            # Nota: Não há linhas em branco adicionadas aqui intencionalmente para evitar problemas.
 
-            elif tipo_comando == "escola":
-                # /consulta escola [marca] [ano] [nome da escola]
-                if len(partes) < 4:
-                     send_slack_message("Comando 'escola' requer marca, ano e o nome (ou parte do nome) da escola. Ex: /consulta escola geekie 2024 'Nome da Escola'")
-                     return
-                # Pega o restante das partes como o nome da escola (suporta nomes com espaços)
-                filtro_escola = " ".join(partes[3:]).strip().lower()
+        elif tipo_comando == "escola": # <--- Este 'elif' deve alinhar com o 'if' e outros 'elif's
+            # /consulta escola [marca] [ano] [nome da escola]
+            if len(partes) < 4:
+                 send_slack_message("Comando 'escola' requer marca, ano e o nome (ou parte do nome) da escola. Ex: /consulta escola geekie 2024 'Nome da Escola'")
+                 return
+            # Pega o restante das partes como o nome da escola (suporta nomes com espaços)
+            filtro_escola = " ".join(partes[3:]).strip().lower()
 
-                # A API não filtra por nome da escola na requisição.
-                # Assim como no filtro por número, precisamos definir um intervalo de datas amplo.
-                data_inicio_busca = hoje - datetime.timedelta(days=365*2) # Últimos 2 anos
-                # Opcional: Ajustar para o início do ano do projeto se for mais recente
-                # inicio_ano_proj = datetime.datetime(ano_projeto_api, 1, 1)
-                # data_inicio_busca = min(data_inicio_busca, inicio_ano_proj)
+            # A API não filtra por nome da escola na requisição.
+            # Assim como no filtro por número, precisamos definir um intervalo de datas amplo.
+            data_inicio_busca = hoje - datetime.timedelta(days=365*2) # Últimos 2 anos
+            # Opcional: Ajustar para o início do ano do projeto se for mais recente
+            # inicio_ano_proj = datetime.datetime(ano_projeto_api, 1, 1)
+            # data_inicio_busca = min(data_inicio_busca, inicio_ano_proj)
 
-                pedidos_payload["DataPedidoInicial"] = data_inicio_busca.strftime("%Y-%m-%d 00:00:00")
-                pedidos_payload["DataPedidoFinal"] = hoje.strftime("%Y-%m-%d 23:59:59")
-                logger.info(f"Buscando pedidos entre {pedidos_payload['DataPedidoInicial']} e {pedidos_payload['DataPedidoFinal']} para filtrar por escola '{filtro_escola}'")
+            pedidos_payload["DataPedidoInicial"] = data_inicio_busca.strftime("%Y-%m-%d 00:00:00")
+            pedidos_payload["DataPedidoFinal"] = hoje.strftime("%Y-%m-%d 23:59:59")
+            logger.info(f"Buscando pedidos entre {pedidos_payload['DataPedidoInicial']} e {pedidos_payload['DataPedidoFinal']} para filtrar por escola '{filtro_escola}'")
 
-            else:
-                # Tipo de comando não reconhecido (já validado parcialmente na rota, mas reforça)
-                 send_slack_message(f"Tipo de consulta '{tipo_comando}' não reconhecido. Use 'aging', 'numero', 'expedicao' ou 'escola'.")
+        else: # <--- Este 'else' deve alinhar com o 'if' e 'elif's
+            # Tipo de comando não reconhecido (já validado parcialmente na rota, mas reforça)
+             send_slack_message(f"Tipo de consulta '{tipo_comando}' não reconhecido. Use 'aging', 'numero', 'expedicao' ou 'escola'.")
+             return
+
+        # --- 3. Consultar Pedidos na API ARCO ---
+        logger.info(f"Consultando API ARCO de pedidos com payload para datas entre {pedidos_payload['DataPedidoInicial']} e {pedidos_payload['DataPedidoFinal']}...")
+        # logger.debug(f"Payload completo: {pedidos_payload}") # Use debug para não logar o token em INFO
+
+        try: # <--- Este é outro try block dentro do try principal para a chamada de pedidos
+            pedidos_brutos = consultar_api_com_retry(URL_PEDIDOS, pedidos_payload)
+
+            if not isinstance(pedidos_brutos, list):
+                 logger.error(f"Resposta inesperada da API /pedidos. Esperava lista, recebeu: {pedidos_brutos}")
+                 # Tenta extrair mensagem de erro da API se houver, com fallbacks
+                 msg_api_err = pedidos_brutos.get("retorno", {}).get("mensagens", {}).get("mensagem", "Resposta inesperada ou vazia da API de pedidos.")
+                 send_slack_message(f"Erro na resposta da API de pedidos: {msg_api_err}")
                  return
 
-            # --- 3. Consultar Pedidos na API ARCO ---
-            logger.info(f"Consultando API ARCO de pedidos com payload para datas entre {pedidos_payload['DataPedidoInicial']} e {pedidos_payload['DataPedidoFinal']}...")
-            # logger.debug(f"Payload completo: {pedidos_payload}") # Use debug para não logar o token em INFO
+            logger.info(f"Recebidos {len(pedidos_brutos)} pedidos brutos da API.")
 
-            try: # <--- Este é outro try block dentro do try principal para a chamada de pedidos
-                pedidos_brutos = consultar_api_com_retry(URL_PEDIDOS, pedidos_payload)
+        except Exception as e: # <--- Este é o except para a consulta de pedidos
+            logger.error(f"Falha crítica ao consultar API de Pedidos: {e}", exc_info=True)
+            send_slack_message(f"Erro ao comunicar com a API ARCO para consultar pedidos: {e}")
+            return
 
-                if not isinstance(pedidos_brutos, list):
-                     logger.error(f"Resposta inesperada da API /pedidos. Esperava lista, recebeu: {pedidos_brutos}")
-                     # Tenta extrair mensagem de erro da API se houver, com fallbacks
-                     msg_api_err = pedidos_brutos.get("retorno", {}).get("mensagens", {}).get("mensagem", "Resposta inesperada ou vazia da API de pedidos.")
-                     send_slack_message(f"Erro na resposta da API de pedidos: {msg_api_err}")
-                     return
+        # --- 4. Aplicar Filtros no Lado do Cliente (se aplicável) ---
+        pedidos_filtrados = pedidos_brutos
 
-                logger.info(f"Recebidos {len(pedidos_brutos)} pedidos brutos da API.")
+        if filtro_numero_pedido:
+             pedidos_filtrados = [
+                 p for p in pedidos_filtrados
+                 # Usar .get para evitar KeyError, converter para string para comparação
+                 if str(p.get("PedidoOrigem", "")) == filtro_numero_pedido
+             ]
+             logger.info(f"Após filtrar por número {filtro_numero_pedido}: {len(pedidos_filtrados)} pedidos encontrados.")
 
-            except Exception as e: # <--- Este é o except para a consulta de pedidos
-                logger.error(f"Falha crítica ao consultar API de Pedidos: {e}", exc_info=True)
-                send_slack_message(f"Erro ao comunicar com a API ARCO para consultar pedidos: {e}")
-                return
-
-            # --- 4. Aplicar Filtros no Lado do Cliente (se aplicável) ---
-            pedidos_filtrados = pedidos_brutos
-
-            if filtro_numero_pedido:
-                 pedidos_filtrados = [
-                     p for p in pedidos_filtrados
-                     # Usar .get para evitar KeyError, converter para string para comparação
-                     if str(p.get("PedidoOrigem", "")) == filtro_numero_pedido
-                 ]
-                 logger.info(f"Após filtrar por número {filtro_numero_pedido}: {len(pedidos_filtrados)} pedidos encontrados.")
-
-            elif filtro_escola:
-                 pedidos_filtrados = [
-                     p for p in pedidos_filtrados
-                     # Usar .get('Escola', '') para evitar erro se o campo estiver ausente
-                     if filtro_escola in p.get("Escola", "").lower()
-                 ]
-                 logger.info(f"Após filtrar por escola '{filtro_escola}': {len(pedidos_filtrados)} pedidos encontrados.")
+        elif filtro_escola:
+             pedidos_filtrados = [
+                 p for p in pedidos_filtrados
+                 # Usar .get('Escola', '') para evitar erro se o campo estiver ausente
+                 if filtro_escola in p.get("Escola", "").lower()
+             ]
+             logger.info(f"Após filtrar por escola '{filtro_escola}': {len(pedidos_filtrados)} pedidos encontrados.")
 
 
-            # --- 5. Formatar e Enviar Resposta para o Slack ---
-            if not pedidos_filtrados:
-                send_slack_message("Nenhum pedido encontrado com os critérios especificados.")
-                return
+        # --- 5. Formatar e Enviar Resposta para o Slack ---
+        if not pedidos_filtrados:
+            send_slack_message("Nenhum pedido encontrado com os critérios especificados.")
+            return
 
-            resposta = "*📦 Resultados encontrados:*\n"
-            # Limita a 5 resultados para não exceder o limite de mensagem do Slack facilmente,
-            # mas informa se houver mais.
-            for i, p in enumerate(pedidos_filtrados[:5]):
-                 # Usar .get() com valor padrão para evitar KeyError se um campo estiver ausente
-                 resposta += (
-                    f"\n🏫 *Escola:* {p.get('Escola', '—')} - {p.get('Cidade', '—')}/{p.get('Uf', '—')}\n"
-                    f"📦 *Produtos:* {p.get('Produtos', '—')} ({p.get('Qtd Produtos', '—')} itens)\n"
-                    f"💲 *Valor:* R$ {p.get('ValorFinalPedido', 0.0):.2f}\n" # Default 0.0 para formatar float
-                    f"🚚 *Status:* {p.get('StatusPedido', '—')}\n"
-                    f"📅 *Data Pedido:* {p.get('DataPedido', '—')}\n"
-                    # A documentação mostra DataExpedicao como campo.
-                    f"📦 *Expedição:* {p.get('DataExpedicao') or 'Ainda não expedido'}\n"
-                    f"📧 {p.get('Email') or '—'} | 📞 {p.get('Telefone') or '—'}\n"
-                    f"ID Origem: {p.get('PedidoOrigem', '—')}\n" # Adiciona PedidoOrigem conforme visto na doc
-                    "— — — — — — — —\n"
-                )
+        resposta = "*📦 Resultados encontrados:*\n"
+        # Limita a 5 resultados para não exceder o limite de mensagem do Slack facilmente,
+        # mas informa se houver mais.
+        for i, p in enumerate(pedidos_filtrados[:5]):
+             # Usar .get() com valor padrão para evitar KeyError se um campo estiver ausente
+             resposta += (
+                f"\n🏫 *Escola:* {p.get('Escola', '—')} - {p.get('Cidade', '—')}/{p.get('Uf', '—')}\n"
+                f"📦 *Produtos:* {p.get('Produtos', '—')} ({p.get('Qtd Produtos', '—')} itens)\n"
+                f"💲 *Valor:* R$ {p.get('ValorFinalPedido', 0.0):.2f}\n" # Default 0.0 para formatar float
+                f"🚚 *Status:* {p.get('StatusPedido', '—')}\n"
+                f"📅 *Data Pedido:* {p.get('DataPedido', '—')}\n"
+                # A documentação mostra DataExpedicao como campo.
+                f"📦 *Expedição:* {p.get('DataExpedicao') or 'Ainda não expedido'}\n"
+                f"📧 {p.get('Email') or '—'} | 📞 {p.get('Telefone') or '—'}\n"
+                f"ID Origem: {p.get('PedidoOrigem', '—')}\n" # Adiciona PedidoOrigem conforme visto na doc
+                "— — — — — — — —\n"
+            )
 
-            # Adicionar mensagem se houver mais de 5 resultados
-            if len(pedidos_filtrados) > 5:
-                resposta += f"\n_Mostrando os primeiros 5 de {len(pedidos_filtrados)} pedidos encontrados._"
+        # Adicionar mensagem se houver mais de 5 resultados
+        if len(pedidos_filtrados) > 5:
+            resposta += f"\n_Mostrando os primeiros 5 de {len(pedidos_filtrados)} pedidos encontrados._"
 
-            send_slack_message(resposta)
-            logger.info("Resposta final enviada para o Slack.")
+        send_slack_message(resposta)
+        logger.info("Resposta final enviada para o Slack.")
 
-    # <--- O 'except Exception' final da função process_slack_command DEVE estar INDENTADO NO MESMO NÍVEL que o try principal da função
+    # <--- Este é o 'except Exception' final da função process_slack_command. Ele deve alinhar com o 'try' principal.
     except Exception as e:
         # Este bloco captura qualquer erro *inesperado* que não foi tratado antes
         logger.error(f"Erro inesperado no processamento do comando Slack (thread): {str(e)}", exc_info=True)
