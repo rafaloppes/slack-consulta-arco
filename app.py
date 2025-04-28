@@ -158,7 +158,7 @@ def process_slack_command(response_url, texto_comando_slack):
 
         # --- 1. Gerar Token de Autenticação ---
         logger.info("Gerando token de autenticação da API ARCO...")
-        try:
+        try: # <--- Try para a chamada da API de token
             # payload para gerar token conforme documentação
             token_payload = {"token": TOKEN_STATICO}
             token_data = consultar_api_com_retry(URL_TOKEN, token_payload)
@@ -189,70 +189,76 @@ def process_slack_command(response_url, texto_comando_slack):
             logger.info("Token ARCO gerado com sucesso.")
             # token_autenticacao já contém o token válido
 
-            # --- 2. Construir Payload para Consultar Pedidos ---
-            # Payload base com campos obrigatórios (exceto datas, que variam)
-            pedidos_payload = {
-                "token": token_autenticacao, # Usar o token recém-gerado
-                "Tipo": "pedido",          # Fixo conforme documentação
-                "Marca": marca_api,
-                "AnoProjeto": ano_projeto_api,
-                "DataPedidoInicial": "",   # Será preenchido abaixo
-                "DataPedidoFinal": "",     # Será preenchido abaixo
-            }
+        except Exception as e: # <--- Este é o except para a chamada da API de token
+             logger.error(f"Falha crítica ao gerar token da API ARCO (exceção): {e}", exc_info=True)
+             send_slack_message(f"Erro ao comunicar com a API ARCO para gerar token (exceção): {e}")
+             return # Interrompe o processamento em caso de exceção
 
-            filtro_numero_pedido = None
-            filtro_escola = None
 
-            # Definir intervalo de datas e filtros baseados no tipo de comando
-            hoje = datetime.datetime.now()
+        # --- 2. Construir Payload para Consultar Pedidos ---
+        # Payload base com campos obrigatórios (exceto datas, que variam)
+        pedidos_payload = {
+            "token": token_autenticacao, # Usar o token recém-gerado
+            "Tipo": "pedido",          # Fixo conforme documentação
+            "Marca": marca_api,
+            "AnoProjeto": ano_projeto_api,
+            "DataPedidoInicial": "",   # Será preenchido abaixo
+            "DataPedidoFinal": "",     # Será preenchido abaixo
+        }
 
-            if tipo_comando == "aging":
-                # /consulta aging [marca] [ano] [dias]
-                dias = int(partes[3]) if len(partes) > 3 and partes[3].isdigit() else 7
-                inicio_data = hoje - datetime.timedelta(days=dias)
-                pedidos_payload["DataPedidoInicial"] = inicio_data.strftime("%Y-%m-%d 00:00:00")
-                pedidos_payload["DataPedidoFinal"] = hoje.strftime("%Y-%m-%d 23:59:59")
+        filtro_numero_pedido = None
+        filtro_escola = None
 
-            elif tipo_comando == "numero":
-                # /consulta numero [marca] [ano] [numero_pedido]
-                if len(partes) < 4:
-                     send_slack_message("Comando 'numero' requer marca, ano e número do pedido. Ex: /consulta numero nave 2025 12345")
-                     return
-                filtro_numero_pedido = partes[3].strip() # Captura o número do pedido
+        # Definir intervalo de datas e filtros baseados no tipo de comando
+        hoje = datetime.datetime.now()
 
-                # A API não filtra por numero_pedido na requisição.
-                # Precisamos definir um intervalo de datas amplo o suficiente para pegar o pedido.
-                # Usa o ano do projeto especificado ou um período recente.
-                # Buscar nos últimos 2 anos para cobrir a maioria dos casos razoáveis
-                data_inicio_busca = hoje - datetime.timedelta(days=365*2) # Últimos 2 anos
-                # Opcional: Ajustar para o início do ano do projeto se for mais recente
-                # inicio_ano_proj = datetime.datetime(ano_projeto_api, 1, 1)
-                # data_inicio_busca = min(data_inicio_busca, inicio_ano_proj) # Buscar a partir do início do ano do projeto ou últimos 2 anos, o que for mais recente
+        if tipo_comando == "aging":
+            # /consulta aging [marca] [ano] [dias]
+            dias = int(partes[3]) if len(partes) > 3 and partes[3].isdigit() else 7
+            inicio_data = hoje - datetime.timedelta(days=dias)
+            pedidos_payload["DataPedidoInicial"] = inicio_data.strftime("%Y-%m-%d 00:00:00")
+            pedidos_payload["DataPedidoFinal"] = hoje.strftime("%Y-%m-%d 23:59:59")
 
-                pedidos_payload["DataPedidoInicial"] = data_inicio_busca.strftime("%Y-%m-%d 00:00:00")
-                pedidos_payload["DataPedidoFinal"] = hoje.strftime("%Y-%m-%d 23:59:59")
-                logger.info(f"Buscando pedidos entre {pedidos_payload['DataPedidoInicial']} e {pedidos_payload['DataPedidoFinal']} para filtrar por número {filtro_numero_pedido}")
+        elif tipo_comando == "numero":
+            # /consulta numero [marca] [ano] [numero_pedido]
+            if len(partes) < 4:
+                 send_slack_message("Comando 'numero' requer marca, ano e número do pedido. Ex: /consulta numero nave 2025 12345")
+                 return
+            filtro_numero_pedido = partes[3].strip() # Captura o número do pedido
 
-            elif tipo_comando == "expedicao":
-                # /consulta expedicao [marca] [ano] [data_inicial-AAAA-MM-DD] [data_final-AAAA-MM-DD]
-                if len(partes) < 5:
-                    send_slack_message("Comando 'expedicao' requer marca, ano, data inicial e final (AAAA-MM-DD). Ex: /consulta expedicao nave 2025 2025-01-01 2025-01-31")
-                    return
-                try:
-                    # === Validação e Formatação das Datas de Expedição ===
-                    data_inicial_str = partes[3].strip()
-                    data_final_str = partes[4].strip()
-                    # Tenta parsear as datas no formato esperado AAAA-MM-DD
-                    datetime.datetime.strptime(data_inicial_str, "%Y-%m-%d")
-                    datetime.datetime.strptime(data_final_str, "%Y-%m-%d") # Corrigido para %Y-%m-%d
+            # A API não filtra por numero_pedido na requisição.
+            # Precisamos definir um intervalo de datas amplo o suficiente para pegar o pedido.
+            # Usa o ano do projeto especificado ou um período recente.
+            # Buscar nos últimos 2 anos para cobrir a maioria dos casos razoáveis
+            data_inicio_busca = hoje - datetime.timedelta(days=365*2) # Últimos 2 anos
+            # Opcional: Ajustar para o início do ano do projeto se for mais recente
+            # inicio_ano_proj = datetime.datetime(ano_projeto_api, 1, 1)
+            # data_inicio_busca = min(data_inicio_busca, inicio_ano_proj) # Buscar a partir do início do ano do projeto ou últimos 2 anos, o que for mais recente
 
-                    # Se parseou com sucesso, formata para o padrão da API AAAA-MM-DD HH:mm:ss
-                    pedidos_payload["DataPedidoInicial"] = f"{data_inicial_str} 00:00:00"
-                    pedidos_payload["DataPedidoFinal"] = f"{data_final_str} 23:59:59"
+            pedidos_payload["DataPedidoInicial"] = data_inicio_busca.strftime("%Y-%m-%d 00:00:00")
+            pedidos_payload["DataPedidoFinal"] = hoje.strftime("%Y-%m-%d 23:59:59")
+            logger.info(f"Buscando pedidos entre {pedidos_payload['DataPedidoInicial']} e {pedidos_payload['DataPedidoFinal']} para filtrar por número {filtro_numero_pedido}")
 
-                except ValueError:
-                    send_slack_message("Formato de data incorreto para 'expedicao'. Use AAAA-MM-DD.")
-                    return
+        elif tipo_comando == "expedicao":
+            # /consulta expedicao [marca] [ano] [data_inicial-AAAA-MM-DD] [data_final-AAAA-MM-DD]
+            if len(partes) < 5:
+                send_slack_message("Comando 'expedicao' requer marca, ano, data inicial e final (AAAA-MM-DD). Ex: /consulta expedicao nave 2025 2025-01-01 2025-01-31")
+                return
+            try:
+                # === Validação e Formatação das Datas de Expedição ===
+                data_inicial_str = partes[3].strip()
+                data_final_str = partes[4].strip()
+                # Tenta parsear as datas no formato esperado AAAA-MM-DD
+                datetime.datetime.strptime(data_inicial_str, "%Y-%m-%d")
+                datetime.datetime.strptime(data_final_str, "%Y-%m-%d") # Corrigido para %Y-%m-%d
+
+                # Se parseou com sucesso, formata para o padrão da API AAAA-MM-DD HH:mm:ss
+                pedidos_payload["DataPedidoInicial"] = f"{data_inicial_str} 00:00:00"
+                pedidos_payload["DataPedidoFinal"] = f"{data_final_str} 23:59:59"
+
+            except ValueError:
+                send_slack_message("Formato de data incorreto para 'expedicao'. Use AAAA-MM-DD.")
+                return
 
             elif tipo_comando == "escola":
                 # /consulta escola [marca] [ano] [nome da escola]
@@ -282,7 +288,7 @@ def process_slack_command(response_url, texto_comando_slack):
             logger.info(f"Consultando API ARCO de pedidos com payload para datas entre {pedidos_payload['DataPedidoInicial']} e {pedidos_payload['DataPedidoFinal']}...")
             # logger.debug(f"Payload completo: {pedidos_payload}") # Use debug para não logar o token em INFO
 
-            try: # <--- Este é outro try block dentro do try principal
+            try: # <--- Este é outro try block dentro do try principal para a chamada de pedidos
                 pedidos_brutos = consultar_api_com_retry(URL_PEDIDOS, pedidos_payload)
 
                 if not isinstance(pedidos_brutos, list):
@@ -349,13 +355,14 @@ def process_slack_command(response_url, texto_comando_slack):
             send_slack_message(resposta)
             logger.info("Resposta final enviada para o Slack.")
 
-    except Exception as e: # <--- Este é o 'except Exception' final da função 'process_slack_command'
+    # <--- O 'except Exception' final da função process_slack_command DEVE estar INDENTADO NO MESMO NÍVEL que o try principal da função
+    except Exception as e:
         # Este bloco captura qualquer erro *inesperado* que não foi tratado antes
         logger.error(f"Erro inesperado no processamento do comando Slack (thread): {str(e)}", exc_info=True)
         # Evita enviar detalhes técnicos completos no erro geral para o usuário
         send_slack_message("Ocorreu um erro inesperado ao processar seu comando. Por favor, tente novamente.")
 
-# --- Rota Flask para Comandos Slack --- # <--- Esta linha deve estar no nível raiz, SEM INDENTAÇÃO
+# --- Rota Flask para Comandos Slack --- # <--- Esta linha DEVE estar SEM INDENTAÇÃO (nível raiz)
 
 @app.route("/slack/commands", methods=["POST"])
 def slack_command():
