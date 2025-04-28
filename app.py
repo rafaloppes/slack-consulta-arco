@@ -167,7 +167,7 @@ def process_slack_command(response_url, texto_comando_slack):
             # Verifica se o statusintegracao é SUCESSO E se o campo 'token' existe e não é vazio
             # Adicionado tratamento para garantir que token_data e token_data.get("retorno") não sejam None
             retorno_data = token_data.get("retorno", {})
-            status_integracao = retorno_data.get("statusintegracao")
+            status_integracao = retorno_data.get("statusIntegracao")
             token_autenticacao = retorno_data.get("token")
             # Tenta obter a mensagem da API, com fallback
             msg_api = retorno_data.get("mensagens", {}).get("mensagem", "Resposta da API de token sem mensagem detalhada.")
