@@ -146,7 +146,7 @@ def process_slack_command(response_url, texto_comando_slack):
         partes = texto_comando_slack.strip().split()
         # A validação básica de contagem já ocorreu na rota, mas pode ser reforçada
         if len(partes) < 2:
-            send_slack_message("Formato incorreto. Use /comando <tipo> <argumentos>. Tipos: aging, numero, expedicao, escola.")
+            send_slack_message("Formato incorreto. Use /comando <tipo> <argumentos>. Tipos: aging, pedido, expedicao, escola.") # Atualizado 'numero' para 'pedido' na mensagem de ajuda
             return
 
         tipo_comando = partes[0].strip().lower() # Converte para minúsculas
@@ -219,10 +219,10 @@ def process_slack_command(response_url, texto_comando_slack):
             pedidos_payload["DataPedidoInicial"] = inicio_data.strftime("%Y-%m-%d 00:00:00")
             pedidos_payload["DataPedidoFinal"] = hoje.strftime("%Y-%m-%d 23:59:59")
 
-        elif tipo_comando == "pedido":
-            # /consulta numero [marca] [ano] [numero_pedido]
+        elif tipo_comando == "pedido": # CORRIGIDO: agora reconhece 'pedido' em vez de 'numero'
+            # /consulta pedido [marca] [ano] [numero_pedido]
             if len(partes) < 4:
-                 send_slack_message("Comando 'numero' requer marca, ano e número do pedido. Ex: /consulta numero nave 2025 12345")
+                 send_slack_message("Comando 'pedido' requer marca, ano e número do pedido. Ex: /consulta pedido nave 2025 12345") # Atualizado mensagem de ajuda
                  return
             filtro_numero_pedido = partes[3].strip() # Captura o número do pedido
 
@@ -255,7 +255,6 @@ def process_slack_command(response_url, texto_comando_slack):
             except ValueError: # <--- Except para a validação de data de expedição
                 send_slack_message("Formato de data incorreto para 'expedicao'. Use AAAA-MM-DD.")
                 return
-            # Nota: Não há linhas em branco adicionadas aqui intencionalmente para evitar problemas.
 
         elif tipo_comando == "escola": # <--- Este 'elif' deve alinhar com o 'if' e outros 'elif's
             # /consulta escola [marca] [ano] [nome da escola]
@@ -276,7 +275,7 @@ def process_slack_command(response_url, texto_comando_slack):
 
         else: # <--- Este 'else' deve alinhar com o 'if' e 'elif's
             # Tipo de comando não reconhecido (já validado parcialmente na rota, mas reforça)
-             send_slack_message(f"Tipo de consulta '{tipo_comando}' não reconhecido. Use 'aging', 'numero', 'expedicao' ou 'escola'.")
+             send_slack_message(f"Tipo de consulta '{tipo_comando}' não reconhecido. Use 'aging', 'pedido', 'expedicao' ou 'escola'.") # Atualizado 'numero' para 'pedido' na mensagem de ajuda
              return
 
         # --- 3. Consultar Pedidos na API ARCO ---
@@ -343,6 +342,8 @@ def process_slack_command(response_url, texto_comando_slack):
                 f"📦 *Expedição:* {p.get('DataExpedicao') or 'Ainda não expedido'}\n"
                 # Removidos Email e Telefone
                 # Removido PedidoOrigem
+                # --- Adicionado Previsão de Entrega ---
+                f"🗓️ *Previsão Entrega:* {p.get('PrevisaoEntrega') or '—'}\n" # Adicionado Previsão Entrega
                 "— — — — — — — —\n"
             )
 
@@ -403,7 +404,7 @@ def slack_command():
          # deu certo, temos a response_url para enviar a mensagem de erro formatada.
          # Tentar enviar mensagem via response_url, mas estar preparado para falha.
          try:
-             send_slack_message("Formato incorreto. Use /comando <tipo> <marca> <ano> [argumentos]. Ex: /consulta numero nave 2025 12345")
+             send_slack_message("Formato incorreto. Use /comando <tipo> <marca> <ano> [argumentos]. Ex: /consulta pedido nave 2025 12345") # Atualizado 'numero' para 'pedido' na mensagem de ajuda
          except Exception as e:
              logger.error(f"Falha ao enviar mensagem de formato incorreto para response_url: {e}")
          # Retorna 200 OK mesmo assim para o Slack, pois a falha foi na validação inicial do formato.
