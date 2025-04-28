@@ -142,11 +142,11 @@ def process_slack_command(response_url, texto_comando_slack):
         except requests.exceptions.RequestException as e:
             logger.error(f"Falha crítica ao enviar mensagem para response_url {response_url}: {e}")
 
-    try:
+    try: # <--- Este é o try principal da função
         partes = texto_comando_slack.strip().split()
         # A validação básica de contagem já ocorreu na rota, mas pode ser reforçada
         if len(partes) < 2:
-            send_slack_message("Formato incorreto. Use /consulta <tipo> <argumentos>. Tipos: aging, numero, expedicao, escola.")
+            send_slack_message("Formato incorreto. Use /comando <tipo> <argumentos>. Tipos: aging, numero, expedicao, escola.")
             return
 
         tipo_comando = partes[0].strip().lower() # Converte para minúsculas
@@ -172,7 +172,7 @@ def process_slack_command(response_url, texto_comando_slack):
             # Tenta obter a mensagem da API, com fallback
             msg_api = retorno_data.get("mensagens", {}).get("mensagem", "Resposta da API de token sem mensagem detalhada.")
 
-            # Condição de erro: status NÃO é SUCESSO, OU status é SUCESSO mas o token NÃO VEIO, OU retorno está totalmente ausente/inválido.
+            # Condição de erro: status NÃO é SUCESSO, OU (||) se o token_autenticacao é um valor "falso" (None, string vazia, etc.)
             if status_integracao != "SUCESSO" or not token_autenticacao:
                 logger.error(f"Falha na resposta da API ARCO /gerartoken. Status: {status_integracao}, Token Presente: {bool(token_autenticacao)}, Mensagem API: {msg_api}")
                 # Enviar mensagem de erro para o Slack.
@@ -282,7 +282,7 @@ def process_slack_command(response_url, texto_comando_slack):
             logger.info(f"Consultando API ARCO de pedidos com payload para datas entre {pedidos_payload['DataPedidoInicial']} e {pedidos_payload['DataPedidoFinal']}...")
             # logger.debug(f"Payload completo: {pedidos_payload}") # Use debug para não logar o token em INFO
 
-            try:
+            try: # <--- Este é outro try block dentro do try principal
                 pedidos_brutos = consultar_api_com_retry(URL_PEDIDOS, pedidos_payload)
 
                 if not isinstance(pedidos_brutos, list):
@@ -294,7 +294,7 @@ def process_slack_command(response_url, texto_comando_slack):
 
                 logger.info(f"Recebidos {len(pedidos_brutos)} pedidos brutos da API.")
 
-            except Exception as e: # Captura exceção levantada por consultar_api_com_retry
+            except Exception as e: # <--- Este é o except para a consulta de pedidos
                 logger.error(f"Falha crítica ao consultar API de Pedidos: {e}", exc_info=True)
                 send_slack_message(f"Erro ao comunicar com a API ARCO para consultar pedidos: {e}")
                 return
@@ -349,13 +349,13 @@ def process_slack_command(response_url, texto_comando_slack):
             send_slack_message(resposta)
             logger.info("Resposta final enviada para o Slack.")
 
-        except Exception as e:
-            # Este bloco captura qualquer erro *inesperado* que não foi tratado antes
-            logger.error(f"Erro inesperado no processamento do comando Slack (thread): {str(e)}", exc_info=True)
-            # Evita enviar detalhes técnicos completos no erro geral para o usuário
-            send_slack_message("Ocorreu um erro inesperado ao processar seu comando. Por favor, tente novamente.")
+    except Exception as e: # <--- Este é o 'except Exception' final da função 'process_slack_command'
+        # Este bloco captura qualquer erro *inesperado* que não foi tratado antes
+        logger.error(f"Erro inesperado no processamento do comando Slack (thread): {str(e)}", exc_info=True)
+        # Evita enviar detalhes técnicos completos no erro geral para o usuário
+        send_slack_message("Ocorreu um erro inesperado ao processar seu comando. Por favor, tente novamente.")
 
-# --- Rota Flask para Comandos Slack ---
+# --- Rota Flask para Comandos Slack --- # <--- Esta linha deve estar no nível raiz, SEM INDENTAÇÃO
 
 @app.route("/slack/commands", methods=["POST"])
 def slack_command():
@@ -376,7 +376,7 @@ def slack_command():
         response_url = form.get("response_url", [""])[0].strip()
         # token = form.get("token", [""])[0] # Opcional: verificar o token do Slack, mas a assinatura é mais segura
         # user_id = form.get("user_id", [""])[0] # Opcional: saber quem executou o comando
-        # channel_id = form.get("channel_id", [""])[0] # Opcional: saber onde foi executado
+        # channel_id = form("channel_id", [""])[0] # Opcional: saber onde foi executado
 
         if not response_url:
              logger.error("response_url ausente na requisição do Slack.")
@@ -392,24 +392,18 @@ def slack_command():
 
     # 3. Validar Formato Básico do Comando Imediatamente
     partes = text.split()
-    # O formato mínimo é tipo + argumento (ex: aging 7, numero 123, expedicao 2025-01-01 2025-01-01, escola nome)
-    # O formato ajustado agora espera marca e ano antes dos argumentos específicos do tipo
-    # Ex: aging nave 2025 7 -> 4 partes minimo
-    # Ex: numero nave 2025 123 -> 4 partes minimo
-    # Ex: expedicao nave 2025 2025-01-01 2025-01-01 -> 5 partes minimo
-    # Ex: escola nave 2025 nome -> 4 partes minimo
-    # O tipo é a primeira parte. Marca é a segunda. Ano é a terceira.
-    # A validação mais detalhada (número de partes para cada tipo) é feita dentro do thread.
-    # Aqui, apenas verifica se há pelo menos tipo, marca e ano (3 partes + /comando = 4 partes no texto completo sem /comando)
+    # O formato mínimo esperado pelo process_slack_command AGORA é tipo + marca + ano
     if len(partes) < 3:
          # Não temos a response_url no caso de parse_qs falhar totalmente, mas se o parse
          # deu certo, temos a response_url para enviar a mensagem de erro formatada.
+         # Tentar enviar mensagem via response_url, mas estar preparado para falha.
          try:
              send_slack_message("Formato incorreto. Use /comando <tipo> <marca> <ano> [argumentos]. Ex: /consulta numero nave 2025 12345")
          except Exception as e:
              logger.error(f"Falha ao enviar mensagem de formato incorreto para response_url: {e}")
-         # Retorna 200 OK mesmo assim para o Slack, pois a falha foi na validação inicial.
-         return jsonify({"response_type": "in_channel", "text": "Erro de formato."}), 200
+         # Retorna 200 OK mesmo assim para o Slack, pois a falha foi na validação inicial do formato.
+         # Uma mensagem imediata no Slack pode ser útil aqui.
+         return jsonify({"response_type": "in_channel", "text": "Erro de formato. Verifique a ajuda do comando."}), 200
 
 
     # 4. Iniciar Processamento Completo em um Thread Separado
@@ -446,8 +440,4 @@ if __name__ == "__main__":
     logger.info(f"Iniciando servidor Flask na porta {port}")
     # debug=False é recomendado para produção
     # use_reloader=False é recomendado quando se usa threading para evitar a duplicação de threads
-    # threaded=True permite que o servidor Flask embutido (para debug/desenvolvimento simples)
-    # rode várias requisições em threads. Em produção com Gunicorn, isso é gerenciado pelo Gunicorn.
-    # Não é estritamente necessário para a thread de background, mas pode ajudar em testes locais sem Gunicorn.
-    # Para produção com Gunicorn, o use_reloader=False é mais importante.
-    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False) # Removido threaded=True, Gunicorn gerencia
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
