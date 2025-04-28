@@ -226,14 +226,23 @@ def process_slack_command(response_url, texto_comando_slack):
                  return
             filtro_numero_pedido = partes[3].strip() # Captura o número do pedido
 
-            # A API não filtra por numero_pedido/idPedido na requisição.
-            # Precisamos definir um intervalo de datas amplo o suficiente para pegar o pedido.
-            # Busca nos últimos 2 anos (mantido por enquanto, ajuste pendente)
-            data_inicio_busca = hoje - datetime.timedelta(days=365*2)
+            # ** AJUSTE: Definir o intervalo de datas para cobrir todo o AnoProjeto especificado **
+            try:
+                # Cria a data de início como 01 de janeiro do AnoProjeto
+                inicio_ano_proj = datetime.datetime(ano_projeto_api, 1, 1)
+                # Cria a data de fim como 31 de dezembro do AnoProjeto
+                fim_ano_proj = datetime.datetime(ano_projeto_api, 12, 31, 23, 59, 59)
 
-            pedidos_payload["DataPedidoInicial"] = data_inicio_busca.strftime("%Y-%m-%d 00:00:00")
-            pedidos_payload["DataPedidoFinal"] = hoje.strftime("%Y-%m-%d 23:59:59")
-            logger.info(f"Buscando pedidos entre {pedidos_payload['DataPedidoInicial']} e {pedidos_payload['DataPedidoFinal']} para filtrar por número {filtro_numero_pedido}")
+                pedidos_payload["DataPedidoInicial"] = inicio_ano_proj.strftime("%Y-%m-%d 00:00:00")
+                pedidos_payload["DataPedidoFinal"] = fim_ano_proj.strftime("%Y-%m-%d 23:59:59")
+
+            except ValueError: # Caso o ano seja inválido (embora a validação inicial já verifique digito)
+                 send_slack_message(f"Erro: Ano {ano_projeto_api} inválido para definir o intervalo de datas.")
+                 return
+
+
+            logger.info(f"Buscando pedidos para o ano de {ano_projeto_api} para filtrar por número {filtro_numero_pedido}")
+
 
         elif tipo_comando == "expedicao":
             # /consulta expedicao [marca] [ano] [data_inicial-AAAA-MM-DD] [data_final-AAAA-MM-DD]
@@ -261,17 +270,23 @@ def process_slack_command(response_url, texto_comando_slack):
             if len(partes) < 4:
                  send_slack_message("Comando 'escola' requer marca, ano e o nome (ou parte do nome) da escola. Ex: /consulta escola geekie 2024 'Nome da Escola'")
                  return
-            # Pega o restante das partes como o nome da escola (suporta nomes com espaços)
-            filtro_escola = " ".join(partes[3:]).strip().lower()
+            filtro_escola = " ".join(partes[3:]).strip().lower() # Pega o restante como nome da escola (suporta nomes com espaços)
 
-            # A API não filtra por nome da escola na requisição.
-            # Assim como no filtro por número, precisamos definir um intervalo de datas amplo.
-            # Busca nos últimos 2 anos (mantido por enquanto, ajuste pendente)
-            data_inicio_busca = hoje - datetime.timedelta(days=365*2)
+            # ** AJUSTE: Definir o intervalo de datas para cobrir todo o AnoProjeto especificado **
+            try:
+                 # Cria a data de início como 01 de janeiro do AnoProjeto
+                inicio_ano_proj = datetime.datetime(ano_projeto_api, 1, 1)
+                # Cria a data de fim como 31 de dezembro do AnoProjeto
+                fim_ano_proj = datetime.datetime(ano_projeto_api, 12, 31, 23, 59, 59)
 
-            pedidos_payload["DataPedidoInicial"] = data_inicio_busca.strftime("%Y-%m-%d 00:00:00")
-            pedidos_payload["DataPedidoFinal"] = hoje.strftime("%Y-%m-%d 23:59:59")
-            logger.info(f"Buscando pedidos entre {pedidos_payload['DataPedidoInicial']} e {pedidos_payload['DataPedidoFinal']} para filtrar por escola '{filtro_escola}'")
+                pedidos_payload["DataPedidoInicial"] = inicio_ano_proj.strftime("%Y-%m-%d 00:00:00")
+                pedidos_payload["DataPedidoFinal"] = fim_ano_proj.strftime("%Y-%m-%d 23:59:59")
+
+            except ValueError: # Caso o ano seja inválido
+                 send_slack_message(f"Erro: Ano {ano_projeto_api} inválido para definir o intervalo de datas.")
+                 return
+
+            logger.info(f"Buscando pedidos para o ano de {ano_projeto_api} para filtrar por escola '{filtro_escola}'")
 
         else: # <--- Este 'else' deve alinhar com o 'if' e 'elif's
             # Tipo de comando não reconhecido (já validado parcialmente na rota, mas reforça)
