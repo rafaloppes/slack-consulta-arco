@@ -248,7 +248,6 @@ def process_slack_command(response_url, texto_comando_slack):
             pedidos_filtrados = [p for p in pedidos_filtrados if filtro_escola in p.get("Escola", "").lower()]
             logger.info(f"Após filtrar por escola '{filtro_escola}': {len(pedidos_filtrados)} pedidos encontrados.")
 
-        # --- NOVO FILTRO: Para o botão "Ver em aberto" ---
         if tipo_comando == "escola_abertos":
             status_fechados = ['entrega realizada', 'cancelado', 'devolução finalizada']
             pedidos_filtrados = [
@@ -265,23 +264,61 @@ def process_slack_command(response_url, texto_comando_slack):
             send_slack_message(response_url, text=msg_erro)
             return
 
-        # --- NOVA LÓGICA: Formatação especial para o comando 'itens' ---
+        # --- MUDANÇA: Lógica de 'itens' agora inclui contexto ---
         if tipo_comando == "itens":
             pedido_unico = pedidos_filtrados[0]
+            
+            # 1. Extrair os dados do pedido
             id_pedido_itens = pedido_unico.get('idPedido', '—')
-            # Formata os produtos para melhor leitura
+            escola = pedido_unico.get('Escola', '—')
+            cidade = pedido_unico.get('Cidade', '—')
+            uf = pedido_unico.get('Uf', '—')
+            status = pedido_unico.get('StatusPedido', '—')
+            data_pedido = pedido_unico.get('DataPedido', '—')
+
+            # 2. Montar a string de detalhes do pedido
+            texto_detalhe_pedido = (
+                f"🔢 *Número do pedido:* {id_pedido_itens}\n"
+                f"🏫 *Escola:* {escola} - {cidade}/{uf}\n"
+                f"🚚 *Status:* {status}\n"
+                f"📅 *Data Pedido:* {data_pedido}"
+            )
+
+            # 3. Formatar os produtos
             produtos_raw = pedido_unico.get('Produtos', 'Nenhum item encontrado.')
             produtos_formatados = "\n".join([item.strip() for item in produtos_raw.split(',') if item.strip()])
             
+            # 4. Construir o bloco de resposta completo
             blocos_de_resposta = [
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"📦 *Itens do Pedido {id_pedido_itens}:*"}},
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": texto_detalhe_pedido # <-- Detalhes do pedido
+                    }
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"📦 *Itens do Pedido:*" # <-- Título dos itens (sem ID, já está acima)
+                    }
+                },
                 {"type": "divider"},
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"```{produtos_formatados}```"}}
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"```{produtos_formatados}```" # <-- Lista de itens
+                    }
+                }
             ]
+            
             # Envia a resposta de itens (visível apenas para o usuário)
             send_slack_message(response_url, blocks=blocos_de_resposta, response_type="ephemeral")
-            logger.info("Resposta de itens enviada.")
+            logger.info("Resposta de itens com contexto enviada.")
             return # Interrompe o processamento aqui
+        # --- FIM DA MUDANÇA ---
 
         # --- Formatação Padrão (para todos os outros comandos) ---
         blocos_de_resposta = [{"type": "section", "text": {"type": "mrkdwn", "text": "*📦 Resultados encontrados:*"}}]
@@ -317,23 +354,19 @@ def process_slack_command(response_url, texto_comando_slack):
 
             elif 'entrega realizada' in status_lower:
                 data_entrega_real = p.get('DataEntrega')
-                
-                # --- MUDANÇA: Ordem Invertida ---
-                if data_expedicao: # 1. Expedição
+                if data_expedicao:
                     texto_do_pedido += f"📦 *Expedição:* {data_expedicao}\n"
-                if data_entrega_real: # 2. Entrega
+                if data_entrega_real:
                     texto_do_pedido += f"✅ *Entrega Realizada:* {data_entrega_real}\n"
-                if transportadora: # 3. Transportadora
+                if transportadora:
                     texto_do_pedido += f"🚛 *Transportadora:* {transportadora}\n"
 
             elif 'cancelado' in status_lower:
                 motivo = p.get('MotivoCancelamento') or 'Não informado'
                 texto_do_pedido += f"🚫 *Motivo Cancelamento:* {motivo}\n"
 
-            # Adiciona o bloco de seção para este pedido
             blocos_de_resposta.append({"type": "section", "text": {"type": "mrkdwn", "text": texto_do_pedido}})
 
-            # --- NOVO BOTÃO (POR PEDIDO): Ver Itens ---
             if 'aguardando entrada estoque' in status_lower:
                 id_pedido_item = p.get('idPedido')
                 if id_pedido_item:
@@ -344,16 +377,14 @@ def process_slack_command(response_url, texto_comando_slack):
                             "type": "button",
                             "text": {"type": "plain_text", "text": "Ver Itens", "emoji": True},
                             "value": valor_botao_item,
-                            "action_id": "ver_itens_pedido" # Novo Action ID
+                            "action_id": "ver_itens_pedido"
                         }]
                     })
 
             blocos_de_resposta.append({"type": "divider"})
 
-        # --- MUDANÇA: Botões Globais (Escola) ---
         if (tipo_comando == "pedido") and escola_para_botao and escola_para_botao != '—':
             valor_botao_escola = f"{marca_para_botao}|{ano_para_botao}|{escola_para_botao}"
-            
             blocos_de_resposta.append({
                 "type": "actions",
                 "elements": [
@@ -361,13 +392,13 @@ def process_slack_command(response_url, texto_comando_slack):
                         "type": "button",
                         "text": {"type": "plain_text", "text": "Ver 5 últimos (Escola)", "emoji": True},
                         "value": valor_botao_escola,
-                        "action_id": "ver_pedidos_escola" # Texto atualizado
+                        "action_id": "ver_pedidos_escola"
                     },
                     {
                         "type": "button",
                         "text": {"type": "plain_text", "text": "Ver em aberto (Escola)", "emoji": True},
-                        "value": valor_botao_escola, # Mesmo valor, ação diferente
-                        "action_id": "ver_pedidos_abertos_escola" # Novo Action ID
+                        "value": valor_botao_escola,
+                        "action_id": "ver_pedidos_abertos_escola"
                     }
                 ]
             })
@@ -407,7 +438,7 @@ def slack_command():
     logger.info(f"Comando Slack recebido: '{text}' para response_url: '{response_url}'")
 
     partes = text.split()
-    if len(partes) < 3: # Validação mínima (comando, marca, ano)
+    if len(partes) < 3:
         return jsonify({
             "response_type": "ephemeral", 
             "text": "Formato incorreto. Use /comando <tipo> <marca> <ano> [argumentos]. Ex: /consulta pedido nave 2025 12345"
@@ -476,17 +507,14 @@ def slack_interactive():
                     novo_comando_texto = f"itens {marca} {ano} {id_pedido}"
                     mensagem_imediata = f"Buscando itens do pedido *{id_pedido}*..."
 
-                # Se uma ação foi identificada, processe-a
                 if novo_comando_texto and mensagem_imediata:
                     logger.info(f"Ação '{action_id}' recebida. Comando: {novo_comando_texto}")
                     
-                    # Envia uma resposta imediata (ephemeral)
                     requests.post(response_url, json={
                         "response_type": "ephemeral", 
                         "text": mensagem_imediata
                     }, timeout=5)
 
-                    # Inicia o processamento em um novo thread
                     thread = threading.Thread(target=process_slack_command, args=(response_url, novo_comando_texto))
                     thread.start()
                 
