@@ -7,7 +7,7 @@ import logging
 from urllib.parse import parse_qs
 import hashlib
 import hmac
-from hmac import compare_digest # Importado corretamente
+from hmac import compare_digest
 from time import time, sleep
 import json
 import random
@@ -21,7 +21,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Configurações da API ARCO e Slack
-# Removendo os valores padrão hardcoded. Estas variáveis DEVEM ser configuradas.
 TOKEN_STATICO = os.getenv("ARCO_API_KEY")
 URL_TOKEN = os.getenv("ARCO_URL_TOKEN")
 URL_PEDIDOS = os.getenv("ARCO_URL_PEDIDOS")
@@ -29,7 +28,6 @@ SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
 
 # --- Verificação na Inicialização ---
 # Verificar se as variáveis de ambiente obrigatórias estão configuradas
-# Esta verificação é importante para garantir que a aplicação não inicie com configurações incompletas ou inseguras
 if not all([TOKEN_STATICO, URL_TOKEN, URL_PEDIDOS, SLACK_SIGNING_SECRET]):
     required = [var for var, value in {
         "ARCO_API_KEY": TOKEN_STATICO,
@@ -44,11 +42,9 @@ if not all([TOKEN_STATICO, URL_TOKEN, URL_PEDIDOS, SLACK_SIGNING_SECRET]):
 
 # Verificação da assinatura do Slack
 def verify_slack_signature(request):
-    # Já verificamos SLACK_SIGNING_SECRET na inicialização, então ele deve existir aqui.
-    # Se, por algum motivo, chegar aqui sem ele, é um erro grave.
     if not SLACK_SIGNING_SECRET:
         logger.critical("verify_slack_signature chamada sem SLACK_SIGNING_SECRET configurado. Configuração inválida.")
-        return False # NUNCA retorne True se o segredo não estiver configurado
+        return False
 
     slack_signature = request.headers.get("X-Slack-Signature")
     slack_timestamp = request.headers.get("X-Slack-Request-Timestamp")
@@ -56,12 +52,10 @@ def verify_slack_signature(request):
         logger.error("Faltando X-Slack-Signature ou X-Slack-Request-Timestamp na requisição do Slack.")
         return False
 
-    # Verificar se o timestamp é muito antigo (mais de 5 minutos)
     if abs(time() - float(slack_timestamp)) > 60 * 5:
         logger.error(f"Timestamp do Slack muito antigo: {slack_timestamp}")
         return False
 
-    # Reconstruir a base string e calcular a assinatura
     body = request.get_data().decode("utf-8")
     sig_basestring = f"v0:{slack_timestamp}:{body}".encode("utf-8")
     computed_sig = "v0=" + hmac.new(
@@ -70,7 +64,6 @@ def verify_slack_signature(request):
         hashlib.sha256
     ).hexdigest()
 
-    # Comparar assinaturas de forma segura
     if not compare_digest(computed_sig, slack_signature):
         logger.warning("Assinatura do Slack inválida.")
         return False
@@ -90,14 +83,13 @@ def consultar_api_com_retry(url, payload, max_tentativas=5, intervalo_inicial=1,
         try:
             headers = {'Content-Type': 'application/json'}
             res = requests.post(url, json=payload, headers=headers, timeout=15)
-            res.raise_for_status()  # Levanta exceção para códigos de status ruins (4xx ou 5xx)
+            res.raise_for_status()
 
             logger.info(f"Tentativa {tentativa}: Sucesso ao chamar {url}. Status: {res.status_code}")
-            # Tenta logar o corpo da resposta para debug, especialmente para o token
             try:
                 logger.info(f"Resposta API ({url}): {res.text}")
             except Exception as log_e:
-                 logger.warning(f"Não foi possível logar o corpo da resposta: {log_e}")
+                logger.warning(f"Não foi possível logar o corpo da resposta: {log_e}")
 
             return res.json()
 
@@ -106,13 +98,11 @@ def consultar_api_com_retry(url, payload, max_tentativas=5, intervalo_inicial=1,
         except requests.exceptions.HTTPError as e:
             logger.warning(f"Tentativa {tentativa}/{max_tentativas} falhou: Erro HTTP {e.response.status_code} ao chamar {url}: {e}")
             if e.response.status_code == 429:
-                 logger.warning("Recebemos um erro 429 (Too Many Requests).")
-            # Tenta logar corpo da resposta de erro também
+                logger.warning("Recebemos um erro 429 (Too Many Requests).")
             try:
                 logger.warning(f"Corpo da resposta de erro ({url}): {e.response.text}")
             except Exception as log_e:
-                 logger.warning(f"Não foi possível logar o corpo da resposta de erro: {log_e}")
-
+                logger.warning(f"Não foi possível logar o corpo da resposta de erro: {log_e}")
         except requests.exceptions.RequestException as e:
             logger.warning(f"Tentativa {tentativa}/{max_tentativas} falhou: Erro de requisição ao chamar {url}: {e}")
 
@@ -129,187 +119,154 @@ def consultar_api_com_retry(url, payload, max_tentativas=5, intervalo_inicial=1,
 def process_slack_command(response_url, texto_comando_slack):
     """
     Processa o comando Slack, interage com a API ARCO e envia a resposta de volta para o Slack.
-    Esta função deve ser executada em um thread separado.
     """
     logger.info(f"Iniciando processamento do comando em thread: {texto_comando_slack}")
-    # Usar response_url para enviar todas as respostas (sucesso, erro, etc.)
     def send_slack_message(message, response_type="in_channel"):
         try:
-            # Garante que o response_url é o fornecido pelo Slack
-            # Usa response_type="in_channel" como padrão para a maioria das respostas
             requests.post(response_url, json={"response_type": response_type, "text": message}, timeout=10)
-            logger.info(f"Mensagem enviada para Slack response_url: {message[:100]}...") # Loga o início da mensagem
+            logger.info(f"Mensagem enviada para Slack response_url: {message[:100]}...")
         except requests.exceptions.RequestException as e:
             logger.error(f"Falha crítica ao enviar mensagem para response_url {response_url}: {e}")
 
-    try: # <--- Este é o try principal da função
+    try:
         partes = texto_comando_slack.strip().split()
-        # A validação básica de contagem já ocorreu na rota, mas pode ser reforçada
-        if len(partes) < 2:
-            send_slack_message("Formato incorreto. Use /comando <tipo> <argumentos>. Tipos: aging, pedido, expedicao, escola.") # Atualizado 'numero' para 'pedido' na mensagem de ajuda
+        if len(partes) < 2: # Validação mínima
+            send_slack_message("Formato incorreto. Use /comando <tipo> <argumentos>...")
             return
 
-        tipo_comando = partes[0].strip().lower() # Converte para minúsculas
-        marca_api = partes[1].strip() if len(partes) > 1 else "nave" # Default 'nave' se não especificado
-        # AnoProjeto padrão 2025, pode ser sobrescrito
+        tipo_comando = partes[0].strip().lower()
+        marca_api = partes[1].strip() if len(partes) > 1 else "nave"
         ano_projeto_api_str = partes[2] if len(partes) > 2 and partes[2].isdigit() else "2025"
         ano_projeto_api = int(ano_projeto_api_str)
 
-
         # --- 1. Gerar Token de Autenticação ---
         logger.info("Gerando token de autenticação da API ARCO...")
-        try: # <--- Try para a chamada da API de token
-            # payload para gerar token conforme documentação
+        try:
             token_payload = {"token": TOKEN_STATICO}
             token_data = consultar_api_com_retry(URL_TOKEN, token_payload)
 
-            # --- Nova Verificação de Sucesso do Token ---
-            # Verifica se o statusintegracao é SUCESSO E se o campo 'token' existe e não é vazio
-            # Adicionado tratamento para garantir que token_data e token_data.get("retorno") não sejam None
             retorno_data = token_data.get("retorno", {})
-            status_integracao = retorno_data.get("statusIntegracao") # CORRIGIDO: 'I' maiúsculo
+            status_integracao = retorno_data.get("statusIntegracao")
             token_autenticacao = retorno_data.get("token")
-            # Tenta obter a mensagem da API, com fallback
             msg_api = retorno_data.get("mensagens", {}).get("mensagem", "Resposta da API de token sem mensagem detalhada.")
 
-            # Condição de erro: status NÃO é SUCESSO, OU (||) se o token_autenticacao é um valor "falso" (None, string vazia, etc.)
             if status_integracao != "SUCESSO" or not token_autenticacao:
                 logger.error(f"Falha na resposta da API ARCO /gerartoken. Status: {status_integracao}, Token Presente: {bool(token_autenticacao)}, Mensagem API: {msg_api}")
-                # Enviar mensagem de erro para o Slack.
-                # Tenta dar um feedback mais específico dependendo da falha
                 if status_integracao == "SUCESSO" and not token_autenticacao:
-                     send_slack_message("Erro interno: A API de token retornou sucesso, mas não forneceu um token válido.")
+                    send_slack_message("Erro interno: A API de token retornou sucesso, mas não forneceu um token válido.")
                 elif status_integracao is None:
-                     send_slack_message(f"Erro na resposta da API de token: Estrutura de resposta inesperada ou 'statusIntegracao' ausente. Mensagem da API: {msg_api}")
-                else: # status_integracao é ERRO ou outro valor não SUCESSO
-                     send_slack_message(f"Erro ao gerar token da API ARCO. Status API: {status_integracao}. Detalhes: {msg_api}")
-                return # Interrompe o processamento se o token não foi gerado corretamente
+                    send_slack_message(f"Erro na resposta da API de token: Estrutura de resposta inesperada ou 'statusIntegracao' ausente. Mensagem da API: {msg_api}")
+                else:
+                    send_slack_message(f"Erro ao gerar token da API ARCO. Status API: {status_integracao}. Detalhes: {msg_api}")
+                return
 
-            # Se passou pela condição acima, o token foi gerado com sucesso e está em token_autenticacao
             logger.info("Token ARCO gerado com sucesso.")
-            # token_autenticacao já contém o token válido
 
-        except Exception as e: # <--- Este é o except para a chamada da API de token
+        except Exception as e:
              logger.error(f"Falha crítica ao gerar token da API ARCO (exceção): {e}", exc_info=True)
              send_slack_message(f"Erro ao comunicar com a API ARCO para gerar token (exceção): {e}")
-             return # Interrompe o processamento em caso de exceção
-
+             return
 
         # --- 2. Construir Payload para Consultar Pedidos ---
-        # Payload base com campos obrigatórios (exceto datas, que variam)
         pedidos_payload = {
-            "token": token_autenticacao, # Usar o token recém-gerado
-            "Tipo": "pedido",          # Fixo conforme documentação
+            "token": token_autenticacao,
+            "Tipo": "pedido",
             "Marca": marca_api,
             "AnoProjeto": ano_projeto_api,
-            "DataPedidoInicial": "",   # Será preenchido abaixo
-            "DataPedidoFinal": "",     # Será preenchido abaixo
+            "DataPedidoInicial": "",
+            "DataPedidoFinal": "",
+            # --- MUDANÇA: 'Despachavel' agora é fixo ---
+            "Despachavel": "S"
         }
 
-        filtro_numero_pedido = None
+        filtro_numero_pedido = None # Limpado, mas a variável é usada para o payload
         filtro_escola = None
-
-        # Definir intervalo de datas e filtros baseados no tipo de comando
         hoje = datetime.datetime.now()
 
         if tipo_comando == "aging":
-            # /consulta aging [marca] [ano] [dias]
             dias = int(partes[3]) if len(partes) > 3 and partes[3].isdigit() else 7
             inicio_data = hoje - datetime.timedelta(days=dias)
             pedidos_payload["DataPedidoInicial"] = inicio_data.strftime("%Y-%m-%d 00:00:00")
             pedidos_payload["DataPedidoFinal"] = hoje.strftime("%Y-%m-%d 23:59:59")
 
-        elif tipo_comando == "pedido": # CORRIGIDO: agora reconhece 'pedido' em vez de 'numero'
-            # /consulta pedido [marca] [ano] [numero_pedido]
+        elif tipo_comando == "pedido":
             if len(partes) < 4:
-                 send_slack_message("Comando 'pedido' requer marca, ano e número do pedido. Ex: /consulta pedido nave 2025 12345") # Atualizado mensagem de ajuda
-                 return
-            filtro_numero_pedido = partes[3].strip() # Captura o número do pedido
+                send_slack_message("Comando 'pedido' requer marca, ano e número do pedido. Ex: /consulta pedido nave 2025 12345")
+                return
+            
+            filtro_numero_pedido_str = partes[3].strip()
 
-            # ** AJUSTE: Definir o intervalo de datas para cobrir todo o AnoProjeto especificado **
+            # --- MUDANÇA: Otimização da API ---
+            # Adiciona o filtro de pedido diretamente no payload
             try:
-                # Cria a data de início como 01 de janeiro do AnoProjeto
-                inicio_ano_proj = datetime.datetime(ano_projeto_api, 1, 1)
-                # Cria a data de fim como 31 de dezembro do AnoProjeto
-                fim_ano_proj = datetime.datetime(ano_projeto_api, 12, 31, 23, 59, 59)
+                pedidos_payload["Pedido"] = int(filtro_numero_pedido_str)
+            except ValueError:
+                send_slack_message(f"Erro: O número do pedido '{filtro_numero_pedido_str}' não é um número válido.")
+                return
 
+            try:
+                inicio_ano_proj = datetime.datetime(ano_projeto_api, 1, 1)
+                fim_ano_proj = datetime.datetime(ano_projeto_api, 12, 31, 23, 59, 59)
                 pedidos_payload["DataPedidoInicial"] = inicio_ano_proj.strftime("%Y-%m-%d 00:00:00")
                 pedidos_payload["DataPedidoFinal"] = fim_ano_proj.strftime("%Y-%m-%d 23:59:59")
-
-            except ValueError: # Caso o ano seja inválido (embora a validação inicial já verifique digito)
-                 send_slack_message(f"Erro: Ano {ano_projeto_api} inválido para definir o intervalo de datas.")
-                 return
-
-
-            logger.info(f"Buscando pedidos para o ano de {ano_projeto_api} para filtrar por número {filtro_numero_pedido}")
-
+            except ValueError:
+                send_slack_message(f"Erro: Ano {ano_projeto_api} inválido para definir o intervalo de datas.")
+                return
+            
+            logger.info(f"Buscando pedido {filtro_numero_pedido_str} no ano {ano_projeto_api} via API.")
 
         elif tipo_comando == "expedicao":
-            # /consulta expedicao [marca] [ano] [data_inicial-AAAA-MM-DD] [data_final-AAAA-MM-DD]
             if len(partes) < 5:
-                send_slack_message("Comando 'expedicao' requer marca, ano, data inicial e final (AAAA-MM-DD). Ex: /consulta expedicao nave 2025 2025-01-01 2025-01-31")
+                send_slack_message("Comando 'expedicao' requer marca, ano, data inicial e final (AAAA-MM-DD).")
                 return
             try:
-                # === Validação e Formatação das Datas de Expedição ===
                 data_inicial_str = partes[3].strip()
                 data_final_str = partes[4].strip()
-                # Tenta parsear as datas no formato esperado AAAA-MM-DD
                 datetime.datetime.strptime(data_inicial_str, "%Y-%m-%d")
                 datetime.datetime.strptime(data_final_str, "%Y-%m-%d")
-
-                # Se parseou com sucesso, formata para o padrão da API AAAA-MM-DD HH:mm:ss
                 pedidos_payload["DataPedidoInicial"] = f"{data_inicial_str} 00:00:00"
                 pedidos_payload["DataPedidoFinal"] = f"{data_final_str} 23:59:59"
-
-            except ValueError: # <--- Except para a validação de data de expedição
+            except ValueError:
                 send_slack_message("Formato de data incorreto para 'expedicao'. Use AAAA-MM-DD.")
                 return
 
-        elif tipo_comando == "escola": # <--- Este 'elif' deve alinhar com o 'if' e outros 'elif's
-            # /consulta escola [marca] [ano] [nome da escola]
+        elif tipo_comando == "escola":
             if len(partes) < 4:
-                 send_slack_message("Comando 'escola' requer marca, ano e o nome (ou parte do nome) da escola. Ex: /consulta escola geekie 2024 'Nome da Escola'")
-                 return
-            filtro_escola = " ".join(partes[3:]).strip().lower() # Pega o restante como nome da escola (suporta nomes com espaços)
+                send_slack_message("Comando 'escola' requer marca, ano e o nome (ou parte do nome) da escola.")
+                return
+            filtro_escola = " ".join(partes[3:]).strip().lower()
 
-            # ** AJUSTE: Definir o intervalo de datas para cobrir todo o AnoProjeto especificado **
             try:
-                 # Cria a data de início como 01 de janeiro do AnoProjeto
                 inicio_ano_proj = datetime.datetime(ano_projeto_api, 1, 1)
-                # Cria a data de fim como 31 de dezembro do AnoProjeto
                 fim_ano_proj = datetime.datetime(ano_projeto_api, 12, 31, 23, 59, 59)
-
                 pedidos_payload["DataPedidoInicial"] = inicio_ano_proj.strftime("%Y-%m-%d 00:00:00")
                 pedidos_payload["DataPedidoFinal"] = fim_ano_proj.strftime("%Y-%m-%d 23:59:59")
-
-            except ValueError: # Caso o ano seja inválido
-                 send_slack_message(f"Erro: Ano {ano_projeto_api} inválido para definir o intervalo de datas.")
-                 return
-
+            except ValueError:
+                send_slack_message(f"Erro: Ano {ano_projeto_api} inválido para definir o intervalo de datas.")
+                return
+            
             logger.info(f"Buscando pedidos para o ano de {ano_projeto_api} para filtrar por escola '{filtro_escola}'")
 
-        else: # <--- Este 'else' deve alinhar com o 'if' e 'elif's
-            # Tipo de comando não reconhecido (já validado parcialmente na rota, mas reforça)
-             send_slack_message(f"Tipo de consulta '{tipo_comando}' não reconhecido. Use 'aging', 'pedido', 'expedicao' ou 'escola'.") # Atualizado 'numero' para 'pedido' na mensagem de ajuda
-             return
+        else:
+            send_slack_message(f"Tipo de consulta '{tipo_comando}' não reconhecido. Use 'aging', 'pedido', 'expedicao' ou 'escola'.")
+            return
 
         # --- 3. Consultar Pedidos na API ARCO ---
-        logger.info(f"Consultando API ARCO de pedidos com payload para datas entre {pedidos_payload['DataPedidoInicial']} e {pedidos_payload['DataPedidoFinal']}...")
-        # logger.debug(f"Payload completo: {pedidos_payload}") # Use debug para não logar o token em INFO
+        logger.info(f"Consultando API ARCO de pedidos com payload (Despachavel=S)...")
+        # logger.debug(f"Payload completo: {pedidos_payload}") # Debug
 
-        try: # <--- Este é outro try block dentro do try principal para a chamada de pedidos
+        try:
             pedidos_brutos = consultar_api_com_retry(URL_PEDIDOS, pedidos_payload)
 
             if not isinstance(pedidos_brutos, list):
-                 logger.error(f"Resposta inesperada da API /pedidos. Esperava lista, recebeu: {pedidos_brutos}")
-                 # Tenta extrair mensagem de erro da API se houver, com fallbacks
-                 msg_api_err = pedidos_brutos.get("retorno", {}).get("mensagens", {}).get("mensagem", "Resposta inesperada ou vazia da API de pedidos.")
-                 send_slack_message(f"Erro na resposta da API de pedidos: {msg_api_err}")
-                 return
+                logger.error(f"Resposta inesperada da API /pedidos. Esperava lista, recebeu: {pedidos_brutos}")
+                msg_api_err = pedidos_brutos.get("retorno", {}).get("mensagens", {}).get("mensagem", "Resposta inesperada ou vazia da API de pedidos.")
+                send_slack_message(f"Erro na resposta da API de pedidos: {msg_api_err}")
+                return
 
             logger.info(f"Recebidos {len(pedidos_brutos)} pedidos brutos da API.")
 
-        except Exception as e: # <--- Este é o except para a consulta de pedidos
+        except Exception as e:
             logger.error(f"Falha crítica ao consultar API de Pedidos: {e}", exc_info=True)
             send_slack_message(f"Erro ao comunicar com a API ARCO para consultar pedidos: {e}")
             return
@@ -317,66 +274,85 @@ def process_slack_command(response_url, texto_comando_slack):
         # --- 4. Aplicar Filtros no Lado do Cliente (se aplicável) ---
         pedidos_filtrados = pedidos_brutos
 
-        if filtro_numero_pedido:
-             pedidos_filtrados = [
-                 p for p in pedidos_filtrados
-                 # ** AJUSTE: Mudar para filtrar pelo idPedido em vez de PedidoOrigem **
-                 # Usar .get para evitar KeyError, converter para string para comparação
-                 if str(p.get("idPedido", "")) == filtro_numero_pedido
-             ]
-             logger.info(f"Após filtrar por número {filtro_numero_pedido}: {len(pedidos_filtrados)} pedidos encontrados.")
-
-        elif filtro_escola: # <--- Este 'elif' deve alinhar com o 'if' e outros 'elif's
-             pedidos_filtrados = [
-                 p for p in pedidos_filtrados
-                 # Usar .get('Escola', '') para evitar erro se o campo estiver ausente
-                 if filtro_escola in p.get("Escola", "").lower()
-             ]
-             logger.info(f"Após filtrar por escola '{filtro_escola}': {len(pedidos_filtrados)} pedidos encontrados.")
-
+        # --- MUDANÇA: Filtro de 'pedido' foi REMOVIDO daqui ---
+        # A API agora faz o filtro 'Pedido'
+        
+        if filtro_escola:
+            pedidos_filtrados = [
+                p for p in pedidos_filtrados
+                if filtro_escola in p.get("Escola", "").lower()
+            ]
+            logger.info(f"Após filtrar por escola '{filtro_escola}': {len(pedidos_filtrados)} pedidos encontrados.")
 
         # --- 5. Formatar e Enviar Resposta para o Slack ---
         if not pedidos_filtrados:
-            send_slack_message("Nenhum pedido encontrado com os critérios especificados.")
+            # Mensagem de erro considera que 'Despachavel=S' foi usado
+            msg_erro = "Nenhum pedido encontrado com os critérios especificados."
+            if tipo_comando == "pedido" or tipo_comando == "escola":
+                 msg_erro += " (Lembrete: A busca considera apenas pedidos 'despacháveis' ou já enviados)."
+            send_slack_message(msg_erro)
             return
 
         resposta = "*📦 Resultados encontrados:*\n"
-        # Limita a 5 resultados para não exceder o limite de mensagem do Slack facilmente,
-        # mas informa se houver mais.
+        
         for i, p in enumerate(pedidos_filtrados[:5]):
-             # Usar .get() com valor padrão para evitar KeyError se um campo estiver ausente
-             # Formatado conforme as últimas preferências do usuário
-             resposta += (
-                # Incluindo idPedido como primeiro campo
+            # --- MUDANÇA: Lógica de exibição condicional ---
+            
+            # Pega os valores principais
+            status_pedido = p.get('StatusPedido', '—')
+            status_lower = status_pedido.lower()
+
+            # Inicia a resposta base
+            resposta += (
                 f"\n🔢 *Número do pedido:* {p.get('idPedido', '—')}\n"
                 f"🏫 *Escola:* {p.get('Escola', '—')} - {p.get('Cidade', '—')}/{p.get('Uf', '—')}\n"
-                # Removido Qtd Produtos e Produtos
-                # Removido ValorFinalPedido
-                f"🚚 *Status:* {p.get('StatusPedido', '—')}\n"
+                f"🚚 *Status:* {status_pedido}\n"
                 f"📅 *Data Pedido:* {p.get('DataPedido', '—')}\n"
-                f"📦 *Expedição:* {p.get('DataExpedicao') or 'Ainda não expedido'}\n"
-                # Removidos Email e Telefone
-                # Removido PedidoOrigem
-                # --- Adicionado Previsão de Entrega ---
-                f"🗓️ *Previsão Entrega:* {p.get('PrevisaoEntrega') or '—'}\n" # Adicionado Previsão Entrega
-                "— — — — — — — —\n"
             )
 
-        # Adicionar mensagem se houver mais de 5 resultados
+            # --- LÓGICA CONDICIONAL ---
+            # Exibe infos de entrega APENAS se "Despachado" ou "Em trânsito"
+            if 'despachado' in status_lower or 'em trânsito' in status_lower:
+                transportadora = p.get('Transportadora')
+                data_expedicao = p.get('DataExpedicao')
+                previsao_entrega = p.get('PrevisaoEntrega')
+
+                if transportadora:
+                    resposta += f"🚛 *Transportadora:* {transportadora}\n"
+                if data_expedicao:
+                    resposta += f"📦 *Expedição:* {data_expedicao}\n"
+                if previsao_entrega:
+                    resposta += f"🗓️ *Previsão Entrega:* {previsao_entrega}\n"
+
+            # --- Lógica Adicional (Exibe data de entrega real) ---
+            data_entrega_real = p.get('DataEntrega')
+            if 'entrega realizada' in status_lower and data_entrega_real:
+                resposta += f"✅ *Entrega Realizada:* {data_entrega_real}\n"
+                
+                # Opcional: Mostrar transportadora se já foi entregue
+                transportadora = p.get('Transportadora')
+                if transportadora:
+                     resposta += f"🚛 *Transportadora:* {transportadora}\n"
+
+            # --- Lógica Adicional (Exibe motivo de cancelamento) ---
+            if 'cancelado' in status_lower:
+                motivo = p.get('MotivoCancelamento') or 'Não informado'
+                resposta += f"🚫 *Motivo Cancelamento:* {motivo}\n"
+
+            resposta += "— — — — — — — —\n"
+            # --- Fim do Loop ---
+
         if len(pedidos_filtrados) > 5:
             resposta += f"\n_Mostrando os primeiros 5 de {len(pedidos_filtrados)} pedidos encontrados._"
 
         send_slack_message(resposta)
         logger.info("Resposta final enviada para o Slack.")
 
-    # <--- Este é o 'except Exception' final da função process_slack_command. Ele deve alinhar com o 'try' principal.
     except Exception as e:
-        # Este bloco captura qualquer erro *inesperado* que não foi tratado antes
         logger.error(f"Erro inesperado no processamento do comando Slack (thread): {str(e)}", exc_info=True)
-        # Evita enviar detalhes técnicos completos no erro geral para o usuário
         send_slack_message("Ocorreu um erro inesperado ao processar seu comando. Por favor, tente novamente.")
 
-# --- Rota Flask para Comandos Slack --- # <--- Esta linha DEVE estar SEM INDENTAÇÃO (nível raiz)
+# --- Rota Flask para Comandos Slack ---
 
 @app.route("/slack/commands", methods=["POST"])
 def slack_command():
@@ -386,79 +362,57 @@ def slack_command():
     """
     # 1. Verificar Assinatura do Slack
     if not verify_slack_signature(request):
-        # verify_slack_signature já loga o motivo
-        return "Assinatura inválida ou requisição não verificada.", 401 # Retorna 401 Unauthorized
+        return "Assinatura inválida ou requisição não verificada.", 401
 
-    # 2. Parsear a Requisição do Slack (form-urlencoded)
+    # 2. Parsear a Requisição do Slack
     try:
         form = parse_qs(request.get_data().decode("utf-8"))
-        # Acessar os valores da lista retornada por parse_qs
         text = form.get("text", [""])[0].strip()
         response_url = form.get("response_url", [""])[0].strip()
-        # token = form.get("token", [""])[0] # Opcional: verificar o token do Slack, mas a assinatura é mais segura
-        # user_id = form.get("user_id", [""])[0] # Opcional: saber quem executou o comando
-        # channel_id = form("channel_id", [""])[0] # Opcional: saber onde foi executado
 
         if not response_url:
-             logger.error("response_url ausente na requisição do Slack.")
-             # Não há como responder ao usuário sem isso, loga e retorna erro 500 para o Slack
-             return "Erro interno: response_url ausente.", 500
+            logger.error("response_url ausente na requisição do Slack.")
+            return "Erro interno: response_url ausente.", 500
 
     except Exception as e:
-         logger.error(f"Erro ao parsear requisição do Slack (rota): {e}", exc_info=True)
-         # Retorna erro 500 se não conseguir nem parsear a requisição
-         return "Erro interno ao processar sua requisição.", 500
+        logger.error(f"Erro ao parsear requisição do Slack (rota): {e}", exc_info=True)
+        return "Erro interno ao processar sua requisição.", 500
 
     logger.info(f"Comando Slack recebido: '{text}' para response_url: '{response_url}'")
 
     # 3. Validar Formato Básico do Comando Imediatamente
     partes = text.split()
-    # O formato mínimo esperado pelo process_slack_command AGORA é tipo + marca + ano
-    if len(partes) < 3:
-         # Não temos a response_url no caso de parse_qs falhar totalmente, mas se o parse
-         # deu certo, temos a response_url para enviar a mensagem de erro formatada.
-         # Tentar enviar mensagem via response_url, mas estar preparado para falha.
-         try:
-             send_slack_message("Formato incorreto. Use /comando <tipo> <marca> <ano> [argumentos]. Ex: /consulta pedido nave 2025 12345") # Atualizado 'numero' para 'pedido' na mensagem de ajuda
-         except Exception as e:
-             logger.error(f"Falha ao enviar mensagem de formato incorreto para response_url: {e}")
-         # Retorna 200 OK mesmo assim para o Slack, pois a falha foi na validação inicial do formato.
-         # Uma mensagem imediata no Slack pode ser útil aqui.
-         return jsonify({"response_type": "in_channel", "text": "Erro de formato. Verifique a ajuda do comando."}), 200
-
+    if len(partes) < 3: # Mínimo: /comando <tipo> <marca> <ano>
+        # Retorna uma mensagem de erro visível apenas para o usuário (ephemeral)
+        # para não poluir o canal
+        return jsonify({
+            "response_type": "ephemeral", 
+            "text": "Formato incorreto. Use /comando <tipo> <marca> <ano> [argumentos]. Ex: /consulta pedido nave 2025 12345"
+        }), 200
 
     # 4. Iniciar Processamento Completo em um Thread Separado
-    # Isso libera rapidamente o worker do Flask para responder ao Slack.
     try:
-        # Passa a response_url e o texto completo do comando para a função de processamento.
         thread = threading.Thread(target=process_slack_command, args=(response_url, text))
         thread.start()
         logger.info("Thread de processamento iniciada.")
 
     except Exception as e:
         logger.error(f"Falha ao iniciar thread de processamento: {e}", exc_info=True)
-         # Se a thread não puder ser iniciada, tentamos avisar o usuário via response_url
         try:
             requests.post(response_url, json={"text": "Erro interno: Não foi possível iniciar o processamento do comando."}, timeout=5)
         except requests.exceptions.RequestException:
-             logger.error("Falha ao enviar mensagem de erro para response_url após falha da thread.")
-        # Mesmo em caso de falha ao iniciar thread, a rota principal deve tentar retornar algo para o Slack
-        return "Erro interno do servidor ao iniciar processo.", 500 # Retorna erro para o Slack também
+            logger.error("Falha ao enviar mensagem de erro para response_url após falha da thread.")
+        return "Erro interno do servidor ao iniciar processo.", 500
 
     # 5. Retornar Resposta Imediata de Sucesso (200 OK) para o Slack
-    # Esta é a resposta que o Slack espera em até 3 segundos.
-    # O texto aqui será exibido imediatamente para o usuário.
-    return jsonify({"response_type": "in_channel", "text": "🛠️ Sua consulta está sendo processada, aguarde..."}), 200
-
+    # Usando "ephemeral" a resposta imediata só aparece para o usuário que digitou
+    return jsonify({"response_type": "ephemeral", "text": "🛠️ Sua consulta está sendo processada, aguarde..."}), 200
 
 # --- Execução ---
 
 if __name__ == "__main__":
-    # A verificação das variáveis de ambiente já acontece no topo do script
     logger.info("Configurações carregadas e verificadas.")
-
     port = int(os.getenv("PORT", 5000))
     logger.info(f"Iniciando servidor Flask na porta {port}")
-    # debug=False é recomendado para produção
-    # use_reloader=False é recomendado quando se usa threading para evitar a duplicação de threads
+    # debug=False e use_reloader=False são recomendados para produção
     app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
