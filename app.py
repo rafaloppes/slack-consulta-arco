@@ -16,11 +16,9 @@ import sys
 app = Flask(__name__)
 
 # --- Configurações ---
-# Configurações de logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configurações da API ARCO e Slack
 TOKEN_STATICO = os.getenv("ARCO_API_KEY")
 URL_TOKEN = os.getenv("ARCO_URL_TOKEN")
 URL_PEDIDOS = os.getenv("ARCO_URL_PEDIDOS")
@@ -78,15 +76,12 @@ def consultar_api_com_retry(url, payload, max_tentativas=5, intervalo_inicial=1,
             headers = {'Content-Type': 'application/json'}
             res = requests.post(url, json=payload, headers=headers, timeout=15)
             res.raise_for_status()
-
             logger.info(f"Tentativa {tentativa}: Sucesso ao chamar {url}. Status: {res.status_code}")
             try:
                 logger.info(f"Resposta API ({url}): {res.text}")
             except Exception as log_e:
                 logger.warning(f"Não foi possível logar o corpo da resposta: {log_e}")
-
             return res.json()
-
         except requests.exceptions.Timeout:
             logger.warning(f"Tentativa {tentativa}/{max_tentativas} falhou: Timeout ao chamar {url}")
         except requests.exceptions.HTTPError as e:
@@ -99,12 +94,10 @@ def consultar_api_com_retry(url, payload, max_tentativas=5, intervalo_inicial=1,
                 logger.warning(f"Não foi possível logar o corpo da resposta de erro: {log_e}")
         except requests.exceptions.RequestException as e:
             logger.warning(f"Tentativa {tentativa}/{max_tentativas} falhou: Erro de requisição ao chamar {url}: {e}")
-
         if tentativa < max_tentativas:
             espera = min(intervalo_inicial * (2 ** (tentativa - 1)) + random.random(), intervalo_maximo)
             logger.info(f"Tentativa {tentativa}: Falha. Próxima tentativa em {espera:.2f} segundos.")
             sleep(espera)
-
     logger.error(f"Falha ao consultar a API {url} após {max_tentativas} tentativas.")
     raise Exception(f"Falha ao consultar a API externa ({url}) após {max_tentativas} tentativas.")
 
@@ -116,15 +109,9 @@ def process_slack_command(response_url, texto_comando_slack):
     """
     logger.info(f"Iniciando processamento do comando em thread: {texto_comando_slack}")
 
-    # --- MUDANÇA: Função de envio atualizada (Passo 3) ---
     def send_slack_message(response_url, text=None, blocks=None, response_type="in_channel"):
-        """
-        Envia uma mensagem para o Slack, suportando texto simples ou blocos.
-        """
-        payload = {
-            "response_type": response_type
-        }
-        
+        """Envia uma mensagem para o Slack, suportando texto simples ou blocos."""
+        payload = {"response_type": response_type}
         if blocks:
             payload["blocks"] = blocks
         elif text:
@@ -132,14 +119,12 @@ def process_slack_command(response_url, texto_comando_slack):
         else:
             logger.error("send_slack_message chamada sem 'text' ou 'blocks'.")
             return
-
         try:
             requests.post(response_url, json=payload, timeout=10)
             log_msg = text if text else f"Blocks: {str(blocks)[:100]}..."
             logger.info(f"Mensagem enviada para Slack response_url: {log_msg}")
         except requests.exceptions.RequestException as e:
             logger.error(f"Falha crítica ao enviar mensagem para response_url {response_url}: {e}")
-    # --- Fim da Mudança ---
 
     try:
         partes = texto_comando_slack.strip().split()
@@ -179,76 +164,66 @@ def process_slack_command(response_url, texto_comando_slack):
 
         # --- 2. Construir Payload para Consultar Pedidos ---
         pedidos_payload = {
-            "token": token_autenticacao,
-            "Tipo": "pedido",
-            "Marca": marca_api,
-            "AnoProjeto": ano_projeto_api,
-            "DataPedidoInicial": "",
-            "DataPedidoFinal": "",
-            "Despachavel": "S" # Filtro fixo
+            "token": token_autenticacao, "Tipo": "pedido", "Marca": marca_api,
+            "AnoProjeto": ano_projeto_api, "DataPedidoInicial": "", "DataPedidoFinal": "",
+            "Despachavel": "S"
         }
 
         filtro_escola = None
         hoje = datetime.datetime.now()
 
-        if tipo_comando == "aging":
-            dias = int(partes[3]) if len(partes) > 3 and partes[3].isdigit() else 7
-            inicio_data = hoje - datetime.timedelta(days=dias)
-            pedidos_payload["DataPedidoInicial"] = inicio_data.strftime("%Y-%m-%d 00:00:00")
-            pedidos_payload["DataPedidoFinal"] = hoje.strftime("%Y-%m-%d 23:59:59")
-
-        elif tipo_comando == "pedido":
-            if len(partes) < 4:
-                send_slack_message(response_url, text="Comando 'pedido' requer marca, ano e número do pedido. Ex: /consulta pedido nave 2025 12345")
-                return
-            filtro_numero_pedido_str = partes[3].strip()
+        def set_date_range_for_year(ano):
             try:
-                pedidos_payload["Pedido"] = int(filtro_numero_pedido_str)
+                inicio_ano = datetime.datetime(ano, 1, 1).strftime("%Y-%m-%d 00:00:00")
+                fim_ano = datetime.datetime(ano, 12, 31, 23, 59, 59).strftime("%Y-%m-%d 23:59:59")
+                return inicio_ano, fim_ano
             except ValueError:
-                send_slack_message(response_url, text=f"Erro: O número do pedido '{filtro_numero_pedido_str}' não é um número válido.")
-                return
-            try:
-                inicio_ano_proj = datetime.datetime(ano_projeto_api, 1, 1)
-                fim_ano_proj = datetime.datetime(ano_projeto_api, 12, 31, 23, 59, 59)
-                pedidos_payload["DataPedidoInicial"] = inicio_ano_proj.strftime("%Y-%m-%d 00:00:00")
-                pedidos_payload["DataPedidoFinal"] = fim_ano_proj.strftime("%Y-%m-%d 23:59:59")
-            except ValueError:
-                send_slack_message(response_url, text=f"Erro: Ano {ano_projeto_api} inválido para definir o intervalo de datas.")
-                return
-            logger.info(f"Buscando pedido {filtro_numero_pedido_str} no ano {ano_projeto_api} via API.")
+                raise ValueError(f"Erro: Ano {ano} inválido para definir o intervalo de datas.")
 
-        elif tipo_comando == "expedicao":
-            if len(partes) < 5:
-                send_slack_message(response_url, text="Comando 'expedicao' requer marca, ano, data inicial e final (AAAA-MM-DD).")
-                return
-            try:
+        try:
+            if tipo_comando == "aging":
+                dias = int(partes[3]) if len(partes) > 3 and partes[3].isdigit() else 7
+                inicio_data = hoje - datetime.timedelta(days=dias)
+                pedidos_payload["DataPedidoInicial"] = inicio_data.strftime("%Y-%m-%d 00:00:00")
+                pedidos_payload["DataPedidoFinal"] = hoje.strftime("%Y-%m-%d 23:59:59")
+
+            elif tipo_comando == "pedido" or tipo_comando == "itens": # 'itens' usa a mesma lógica de busca
+                if len(partes) < 4:
+                    send_slack_message(response_url, text=f"Comando '{tipo_comando}' requer marca, ano e número do pedido.")
+                    return
+                filtro_numero_pedido_str = partes[3].strip()
+                try:
+                    pedidos_payload["Pedido"] = int(filtro_numero_pedido_str)
+                except ValueError:
+                    send_slack_message(response_url, text=f"Erro: O número do pedido '{filtro_numero_pedido_str}' não é um número válido.")
+                    return
+                pedidos_payload["DataPedidoInicial"], pedidos_payload["DataPedidoFinal"] = set_date_range_for_year(ano_projeto_api)
+                logger.info(f"Buscando pedido {filtro_numero_pedido_str} no ano {ano_projeto_api} via API.")
+
+            elif tipo_comando == "expedicao":
+                if len(partes) < 5:
+                    send_slack_message(response_url, text="Comando 'expedicao' requer marca, ano, data inicial e final (AAAA-MM-DD).")
+                    return
                 data_inicial_str = partes[3].strip()
                 data_final_str = partes[4].strip()
-                datetime.datetime.strptime(data_inicial_str, "%Y-%m-%d")
-                datetime.datetime.strptime(data_final_str, "%Y-%m-%d")
+                datetime.datetime.strptime(data_inicial_str, "%Y-%m-%d") # Validação
+                datetime.datetime.strptime(data_final_str, "%Y-%m-%d") # Validação
                 pedidos_payload["DataPedidoInicial"] = f"{data_inicial_str} 00:00:00"
                 pedidos_payload["DataPedidoFinal"] = f"{data_final_str} 23:59:59"
-            except ValueError:
-                send_slack_message(response_url, text="Formato de data incorreto para 'expedicao'. Use AAAA-MM-DD.")
-                return
 
-        elif tipo_comando == "escola":
-            if len(partes) < 4:
-                send_slack_message(response_url, text="Comando 'escola' requer marca, ano e o nome (ou parte do nome) da escola.")
-                return
-            filtro_escola = " ".join(partes[3:]).strip().lower()
-            try:
-                inicio_ano_proj = datetime.datetime(ano_projeto_api, 1, 1)
-                fim_ano_proj = datetime.datetime(ano_projeto_api, 12, 31, 23, 59, 59)
-                pedidos_payload["DataPedidoInicial"] = inicio_ano_proj.strftime("%Y-%m-%d 00:00:00")
-                pedidos_payload["DataPedidoFinal"] = fim_ano_proj.strftime("%Y-%m-%d 23:59:59")
-            except ValueError:
-                send_slack_message(response_url, text=f"Erro: Ano {ano_projeto_api} inválido para definir o intervalo de datas.")
-                return
-            logger.info(f"Buscando pedidos para o ano de {ano_projeto_api} para filtrar por escola '{filtro_escola}'")
+            elif tipo_comando == "escola" or tipo_comando == "escola_abertos": # 'escola_abertos' usa a mesma lógica de busca
+                if len(partes) < 4:
+                    send_slack_message(response_url, text="Comando 'escola' requer marca, ano e o nome (ou parte do nome) da escola.")
+                    return
+                filtro_escola = " ".join(partes[3:]).strip().lower()
+                pedidos_payload["DataPedidoInicial"], pedidos_payload["DataPedidoFinal"] = set_date_range_for_year(ano_projeto_api)
+                logger.info(f"Buscando pedidos para o ano de {ano_projeto_api} para filtrar por escola '{filtro_escola}'")
 
-        else:
-            send_slack_message(response_url, text=f"Tipo de consulta '{tipo_comando}' não reconhecido. Use 'aging', 'pedido', 'expedicao' ou 'escola'.")
+            else:
+                send_slack_message(response_url, text=f"Tipo de consulta '{tipo_comando}' não reconhecido.")
+                return
+        except (ValueError, IndexError) as e:
+            send_slack_message(response_url, text=f"Erro ao processar comando: {e}")
             return
 
         # --- 3. Consultar Pedidos na API ARCO ---
@@ -270,31 +245,46 @@ def process_slack_command(response_url, texto_comando_slack):
         pedidos_filtrados = pedidos_brutos
         
         if filtro_escola:
-            pedidos_filtrados = [
-                p for p in pedidos_filtrados
-                if filtro_escola in p.get("Escola", "").lower()
-            ]
+            pedidos_filtrados = [p for p in pedidos_filtrados if filtro_escola in p.get("Escola", "").lower()]
             logger.info(f"Após filtrar por escola '{filtro_escola}': {len(pedidos_filtrados)} pedidos encontrados.")
 
-        # --- 5. Formatar e Enviar Resposta para o Slack (MUDANÇA PASSO 4) ---
+        # --- NOVO FILTRO: Para o botão "Ver em aberto" ---
+        if tipo_comando == "escola_abertos":
+            status_fechados = ['entrega realizada', 'cancelado', 'devolução finalizada']
+            pedidos_filtrados = [
+                p for p in pedidos_filtrados
+                if p.get("StatusPedido", "").lower() not in status_fechados
+            ]
+            logger.info(f"Após filtrar por 'pedidos abertos': {len(pedidos_filtrados)} pedidos encontrados.")
+
+        # --- 5. Formatar e Enviar Resposta para o Slack ---
         if not pedidos_filtrados:
             msg_erro = "Nenhum pedido encontrado com os critérios especificados."
-            if tipo_comando == "pedido" or tipo_comando == "escola":
+            if tipo_comando != "aging":
                  msg_erro += " (Lembrete: A busca considera apenas pedidos 'despacháveis' ou já enviados)."
             send_slack_message(response_url, text=msg_erro)
             return
 
-        # Lista de blocos que será enviada
-        blocos_de_resposta = [
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": "*📦 Resultados encontrados:*"
-                }
-            }
-        ]
-        
+        # --- NOVA LÓGICA: Formatação especial para o comando 'itens' ---
+        if tipo_comando == "itens":
+            pedido_unico = pedidos_filtrados[0]
+            id_pedido_itens = pedido_unico.get('idPedido', '—')
+            # Formata os produtos para melhor leitura
+            produtos_raw = pedido_unico.get('Produtos', 'Nenhum item encontrado.')
+            produtos_formatados = "\n".join([item.strip() for item in produtos_raw.split(',') if item.strip()])
+            
+            blocos_de_resposta = [
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"📦 *Itens do Pedido {id_pedido_itens}:*"}},
+                {"type": "divider"},
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"```{produtos_formatados}```"}}
+            ]
+            # Envia a resposta de itens (visível apenas para o usuário)
+            send_slack_message(response_url, blocks=blocos_de_resposta, response_type="ephemeral")
+            logger.info("Resposta de itens enviada.")
+            return # Interrompe o processamento aqui
+
+        # --- Formatação Padrão (para todos os outros comandos) ---
+        blocos_de_resposta = [{"type": "section", "text": {"type": "mrkdwn", "text": "*📦 Resultados encontrados:*"}}]
         escola_para_botao = None
         marca_para_botao = marca_api
         ano_para_botao = ano_projeto_api
@@ -303,24 +293,19 @@ def process_slack_command(response_url, texto_comando_slack):
             status_pedido = p.get('StatusPedido', '—')
             status_lower = status_pedido.lower()
             
-            # Pega o nome da escola para usar no botão (apenas do primeiro resultado)
-            if i == 0 and tipo_comando == "pedido":
-                # Tenta pegar só o nome principal da escola
+            if i == 0 and (tipo_comando == "pedido" or tipo_comando == "itens"):
                 escola_raw = p.get('Escola', '—')
                 escola_para_botao = escola_raw.split(' - ')[0].strip() if ' - ' in escola_raw else escola_raw.strip()
 
-            # Monta a string de texto para este pedido
             texto_do_pedido = ""
             texto_do_pedido += f"🔢 *Número do pedido:* {p.get('idPedido', '—')}\n"
             texto_do_pedido += f"🏫 *Escola:* {p.get('Escola', '—')} - {p.get('Cidade', '—')}/{p.get('Uf', '—')}\n"
             texto_do_pedido += f"🚚 *Status:* {status_pedido}\n"
             texto_do_pedido += f"📅 *Data Pedido:* {p.get('DataPedido', '—')}\n"
 
-            # Pega os valores que podem ser usados em múltiplos status
             transportadora = p.get('Transportadora')
             data_expedicao = p.get('DataExpedicao')
 
-            # 1. Lógica para "Em trânsito" ou "Despachado"
             if 'despachado' in status_lower or 'em trânsito' in status_lower:
                 previsao_entrega = p.get('PrevisaoEntrega')
                 if transportadora:
@@ -330,66 +315,69 @@ def process_slack_command(response_url, texto_comando_slack):
                 if previsao_entrega:
                     texto_do_pedido += f"🗓️ *Previsão Entrega:* {previsao_entrega}\n"
 
-            # 2. Lógica para "Entrega realizada" (com seu ajuste)
             elif 'entrega realizada' in status_lower:
                 data_entrega_real = p.get('DataEntrega')
-                if data_entrega_real:
-                    texto_do_pedido += f"✅ *Entrega Realizada:* {data_entrega_real}\n"
-                if transportadora:
-                    texto_do_pedido += f"🚛 *Transportadora:* {transportadora}\n"
-                if data_expedicao:
+                
+                # --- MUDANÇA: Ordem Invertida ---
+                if data_expedicao: # 1. Expedição
                     texto_do_pedido += f"📦 *Expedição:* {data_expedicao}\n"
+                if data_entrega_real: # 2. Entrega
+                    texto_do_pedido += f"✅ *Entrega Realizada:* {data_entrega_real}\n"
+                if transportadora: # 3. Transportadora
+                    texto_do_pedido += f"🚛 *Transportadora:* {transportadora}\n"
 
-            # 3. Lógica para "Cancelado"
             elif 'cancelado' in status_lower:
                 motivo = p.get('MotivoCancelamento') or 'Não informado'
                 texto_do_pedido += f"🚫 *Motivo Cancelamento:* {motivo}\n"
 
-            # Adiciona este pedido como um bloco de seção
-            blocos_de_resposta.append({
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": texto_do_pedido
-                }
-            })
-            # Adiciona um divisor
+            # Adiciona o bloco de seção para este pedido
+            blocos_de_resposta.append({"type": "section", "text": {"type": "mrkdwn", "text": texto_do_pedido}})
+
+            # --- NOVO BOTÃO (POR PEDIDO): Ver Itens ---
+            if 'aguardando entrada estoque' in status_lower:
+                id_pedido_item = p.get('idPedido')
+                if id_pedido_item:
+                    valor_botao_item = f"{marca_api}|{ano_projeto_api}|{id_pedido_item}"
+                    blocos_de_resposta.append({
+                        "type": "actions",
+                        "elements": [{
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Ver Itens", "emoji": True},
+                            "value": valor_botao_item,
+                            "action_id": "ver_itens_pedido" # Novo Action ID
+                        }]
+                    })
+
             blocos_de_resposta.append({"type": "divider"})
 
-        # --- Adiciona o botão se for o caso ---
-        if tipo_comando == "pedido" and escola_para_botao and escola_para_botao != '—':
-            # Cria o valor: "nave|2025|COLEGIO DARWIN"
-            valor_botao = f"{marca_para_botao}|{ano_para_botao}|{escola_para_botao}"
+        # --- MUDANÇA: Botões Globais (Escola) ---
+        if (tipo_comando == "pedido") and escola_para_botao and escola_para_botao != '—':
+            valor_botao_escola = f"{marca_para_botao}|{ano_para_botao}|{escola_para_botao}"
             
             blocos_de_resposta.append({
                 "type": "actions",
                 "elements": [
                     {
                         "type": "button",
-                        "text": {
-                            "type": "plain_text",
-                            "text": "Ver últimos 5 pedidos desta escola",
-                            "emoji": True
-                        },
-                        "value": valor_botao,
-                        "action_id": "ver_pedidos_escola" # ID que o /interactive vai checar
+                        "text": {"type": "plain_text", "text": "Ver 5 últimos (Escola)", "emoji": True},
+                        "value": valor_botao_escola,
+                        "action_id": "ver_pedidos_escola" # Texto atualizado
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Ver em aberto (Escola)", "emoji": True},
+                        "value": valor_botao_escola, # Mesmo valor, ação diferente
+                        "action_id": "ver_pedidos_abertos_escola" # Novo Action ID
                     }
                 ]
             })
 
-        # Adicionar mensagem de "mais resultados"
         if len(pedidos_filtrados) > 5:
             blocos_de_resposta.append({
                 "type": "context",
-                "elements": [
-                    {
-                        "type": "mrkdwn",
-                        "text": f"_Mostrando os primeiros 5 de {len(pedidos_filtrados)} pedidos encontrados._"
-                    }
-                ]
+                "elements": [{"type": "mrkdwn", "text": f"_Mostrando os primeiros 5 de {len(pedidos_filtrados)} pedidos encontrados._"}]
             })
 
-        # Envia a resposta final em blocos
         send_slack_message(response_url, blocks=blocos_de_resposta)
         logger.info("Resposta final em blocos enviada para o Slack.")
 
@@ -401,10 +389,7 @@ def process_slack_command(response_url, texto_comando_slack):
 
 @app.route("/slack/commands", methods=["POST"])
 def slack_command():
-    """
-    Recebe comandos slash do Slack, verifica a assinatura e inicia
-    o processamento do comando em um thread separado para evitar timeout.
-    """
+    """Recebe comandos slash do Slack, verifica assinatura e inicia thread."""
     if not verify_slack_signature(request):
         return "Assinatura inválida ou requisição não verificada.", 401
 
@@ -412,7 +397,6 @@ def slack_command():
         form = parse_qs(request.get_data().decode("utf-8"))
         text = form.get("text", [""])[0].strip()
         response_url = form.get("response_url", [""])[0].strip()
-
         if not response_url:
             logger.error("response_url ausente na requisição do Slack.")
             return "Erro interno: response_url ausente.", 500
@@ -423,7 +407,7 @@ def slack_command():
     logger.info(f"Comando Slack recebido: '{text}' para response_url: '{response_url}'")
 
     partes = text.split()
-    if len(partes) < 3:
+    if len(partes) < 3: # Validação mínima (comando, marca, ano)
         return jsonify({
             "response_type": "ephemeral", 
             "text": "Formato incorreto. Use /comando <tipo> <marca> <ano> [argumentos]. Ex: /consulta pedido nave 2025 12345"
@@ -444,12 +428,11 @@ def slack_command():
     return jsonify({"response_type": "ephemeral", "text": "🛠️ Sua consulta está sendo processada, aguarde..."}), 200
 
 
-# --- MUDANÇA: NOVA ROTA INTERATIVA (Passo 2) ---
+# --- Rota Flask para Interatividade (Botões) ---
+
 @app.route("/slack/interactive", methods=["POST"])
 def slack_interactive():
-    """
-    Recebe interações do Slack (cliques em botões).
-    """
+    """Recebe interações do Slack (cliques em botões)."""
     if not verify_slack_signature(request):
         logger.warning("Assinatura inválida na rota interativa.")
         return "Assinatura inválida.", 401
@@ -473,32 +456,52 @@ def slack_interactive():
             action_id = action.get("action_id")
             action_value = action.get("value")
 
-            if action_id == "ver_pedidos_escola" and action_value:
-                logger.info(f"Ação 'ver_pedidos_escola' recebida com valor: {action_value}")
-                
-                try:
+            novo_comando_texto = None
+            mensagem_imediata = None
+            
+            try:
+                # Roteamento das ações do botão
+                if action_id == "ver_pedidos_escola" and action_value:
                     marca, ano, nome_escola = action_value.split("|", 2)
                     novo_comando_texto = f"escola {marca} {ano} {nome_escola}"
+                    mensagem_imediata = f"Buscando os últimos 5 pedidos para a escola: *{nome_escola}*..."
+
+                elif action_id == "ver_pedidos_abertos_escola" and action_value:
+                    marca, ano, nome_escola = action_value.split("|", 2)
+                    novo_comando_texto = f"escola_abertos {marca} {ano} {nome_escola}"
+                    mensagem_imediata = f"Buscando pedidos em aberto para: *{nome_escola}*..."
+
+                elif action_id == "ver_itens_pedido" and action_value:
+                    marca, ano, id_pedido = action_value.split("|", 2)
+                    novo_comando_texto = f"itens {marca} {ano} {id_pedido}"
+                    mensagem_imediata = f"Buscando itens do pedido *{id_pedido}*..."
+
+                # Se uma ação foi identificada, processe-a
+                if novo_comando_texto and mensagem_imediata:
+                    logger.info(f"Ação '{action_id}' recebida. Comando: {novo_comando_texto}")
                     
+                    # Envia uma resposta imediata (ephemeral)
                     requests.post(response_url, json={
                         "response_type": "ephemeral", 
-                        "text": f"Buscando os últimos 5 pedidos para a escola: *{nome_escola}*..."
+                        "text": mensagem_imediata
                     }, timeout=5)
 
+                    # Inicia o processamento em um novo thread
                     thread = threading.Thread(target=process_slack_command, args=(response_url, novo_comando_texto))
                     thread.start()
+                
+                else:
+                    logger.warning(f"Ação não reconhecida ou valor ausente: {action_id}")
 
-                except Exception as e:
-                    logger.error(f"Erro ao processar ação 'ver_pedidos_escola': {e}")
-                    requests.post(response_url, json={"text": "Erro ao processar sua solicitação."}, timeout=5)
+            except Exception as e:
+                logger.error(f"Erro ao processar ação '{action_id}': {e}")
+                requests.post(response_url, json={"text": "Erro ao processar sua solicitação."}, timeout=5)
 
     except Exception as e:
         logger.error(f"Erro grave na rota /slack/interactive: {e}", exc_info=True)
         return "Erro interno.", 500
 
     return "", 200
-# --- FIM DO NOVO BLOCO ---
-
 
 # --- Execução ---
 
