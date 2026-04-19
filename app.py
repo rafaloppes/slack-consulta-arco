@@ -23,7 +23,9 @@ TOKEN_STATICO = os.getenv("ARCO_API_KEY")
 URL_TOKEN = os.getenv("ARCO_URL_TOKEN")
 URL_PEDIDOS = os.getenv("ARCO_URL_PEDIDOS")
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
-RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL") 
+
+# COLA A TUA URL DO GOOGLE APPS SCRIPT AQUI:
+URL_LOGISTICA_PLANILHA = "https://script.google.com/a/macros/arcoeducacao.com.br/s/AKfycbwQm7ag5uiZTe7laz-EPWK_SaxipYgRFeWmMKdz9fl.../exec"
 
 if not all([TOKEN_STATICO, URL_TOKEN, URL_PEDIDOS, SLACK_SIGNING_SECRET]):
     logger.critical("Faltam variáveis de ambiente obrigatórias.")
@@ -42,18 +44,29 @@ def verify_slack_signature(request):
     computed_sig = "v0=" + hmac.new(SLACK_SIGNING_SECRET.encode("utf-8"), sig_basestring, hashlib.sha256).hexdigest()
     return compare_digest(computed_sig, slack_signature)
 
-def consultar_api_com_retry(url, payload, max_tentativas=3):
-    tentativa = 0
-    while tentativa < max_tentativas:
-        tentativa += 1
-        try:
-            res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}, timeout=45)
-            res.raise_for_status()
-            return res.json()
-        except Exception as e:
-            logger.warning(f"Tentativa {tentativa} falhou: {e}")
-            if tentativa < max_tentativas: sleep(2)
-    raise Exception(f"Falha na API após {max_tentativas} tentativas.")
+def consultar_api_arco(url, payload):
+    try:
+        res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}, timeout=45)
+        res.raise_for_status()
+        return res.json()
+    except Exception as e:
+        logger.error(f"Erro na ARCO: {e}")
+        return None
+
+def obter_logistica_planilha(id_pedido):
+    """Consulta a tua planilha via Apps Script"""
+    try:
+        # Adiciona o ID como parâmetro na URL
+        url_final = f"{URL_LOGISTICA_PLANILHA}?id={id_pedido}"
+        res = requests.get(url_final, timeout=15)
+        res.raise_for_status()
+        dados = res.json()
+        if dados and "erro" not in dados:
+            return dados
+        return None
+    except Exception as e:
+        logger.error(f"Erro ao consultar planilha: {e}")
+        return None
 
 def obter_chave_escola(pedido):
     codigo = str(pedido.get('CodigoAcesso') or '').strip()
@@ -66,190 +79,118 @@ def formatar_lista_produtos(produtos_raw):
     if not produtos_raw: return "• Nenhum item informado"
     return "\n".join([f"• {item.strip()}" for item in produtos_raw.replace('|', ',').split(',') if item.strip()])
 
-def obter_qtd_total(p):
-    return p.get('Qtd Produtos') or p.get('QtdProdutos') or '—'
-
 # --- Lógica Principal ---
 
 def process_slack_command(response_url, texto_comando_slack):
-    logger.info(f"Processando: {texto_comando_slack}")
-
     def send_slack_message(response_url, text=None, blocks=None):
         payload = {"response_type": "in_channel", "replace_original": True}
         if blocks: payload["blocks"] = blocks
         elif text: payload["text"] = text
-        try: requests.post(response_url, json=payload, timeout=10)
-        except: pass
+        requests.post(response_url, json=payload, timeout=10)
 
     try:
         partes = texto_comando_slack.strip().split()
-        if len(partes) < 3:
-            send_slack_message(response_url, text="Formato: /comando <tipo> <marca> [ano] <escola/id>")
-            return
-
         tipo_comando = partes[0].lower()
         marca = partes[1]
         
-        # Lógica de ano automático (2026)
-        ano_atual = 2026 
-        if partes[2].isdigit() and 2020 <= int(partes[2]) <= 2030:
+        # Ano automático ou manual
+        ano_atual = 2026
+        if len(partes) > 2 and partes[2].isdigit() and 2020 <= int(partes[2]) <= 2030:
             ano = int(partes[2])
-            inicio_busca_idx = 3
+            inicio_idx = 3
         else:
             ano = ano_atual
-            inicio_busca_idx = 2
+            inicio_idx = 2
 
-        # Fatiamento inteligente
-        if tipo_comando in ["pedido", "itens"]:
-            id_pedido_especifico = partes[inicio_busca_idx]
-            filtro_chave = ""
-            offset = 0
-        else:
-            id_pedido_especifico = None
-            if partes[-1].isdigit() and len(partes) > (inicio_busca_idx + 1):
-                offset = int(partes[-1])
-                filtro_chave = " ".join(partes[inicio_busca_idx:-1]).strip()
-            else:
-                offset = 0
-                filtro_chave = " ".join(partes[inicio_busca_idx:]).strip()
+        id_pedido_especifico = partes[inicio_idx] if tipo_comando in ["pedido", "itens"] else None
+        filtro_chave = " ".join(partes[inicio_idx:]).strip() if not id_pedido_especifico else ""
+        offset = int(partes[-1]) if partes[-1].isdigit() and len(partes) > (inicio_idx + 1) else 0
 
-        # 1. Autenticação
-        token_data = consultar_api_com_retry(URL_TOKEN, {"token": TOKEN_STATICO})
+        # 1. Autenticação e Busca ARCO
+        token_data = consultar_api_arco(URL_TOKEN, {"token": TOKEN_STATICO})
         token = token_data.get("retorno", {}).get("token")
-        if not token:
-            send_slack_message(response_url, text="Erro de autenticação ARCO.")
-            return
-
-        # 2. Payload
-        payload = {
-            "token": token, "Tipo": "pedido", "Marca": marca, "AnoProjeto": ano,
-            "DataPedidoInicial": "", "DataPedidoFinal": "", "Despachavel": "S"
-        }
-        if id_pedido_especifico: payload["Pedido"] = int(id_pedido_especifico)
-
-        # 3. Consulta
-        pedidos_brutos = consultar_api_com_retry(URL_PEDIDOS, payload)
+        
+        payload_arco = {"token": token, "Tipo": "pedido", "Marca": marca, "AnoProjeto": ano, "Despachavel": "S"}
+        if id_pedido_especifico: payload_arco["Pedido"] = int(id_pedido_especifico)
+        
+        pedidos_brutos = consultar_api_arco(URL_PEDIDOS, payload_arco)
         if not isinstance(pedidos_brutos, list):
-            send_slack_message(response_url, text=f"Nenhum dado retornado para {marca} em {ano}.")
+            send_slack_message(response_url, text="Nenhum pedido encontrado.")
             return
 
-        # 4. Filtro de Pedidos
-        pedidos_filtrados = []
+        # 2. Filtragem
+        pedidos_final = []
         if id_pedido_especifico:
-            pedidos_filtrados = pedidos_brutos # API já filtrou
+            pedidos_final = pedidos_brutos
         else:
             termo = filtro_chave.lower()
             for p in pedidos_brutos:
                 if termo == obter_chave_escola(p).lower() or termo in str(p.get("Escola") or "").lower():
                     status = str(p.get("StatusPedido") or "").lower()
-                    # No panorama ou abertos, filtramos o que já acabou
-                    if tipo_comando in ["escola_abertos", "busca_chave_abertos", "panorama"]:
-                        if not any(x in status for x in ["entreg", "realizada", "cancel", "devoluç"]):
-                            pedidos_filtrados.append(p)
-                    else:
-                        pedidos_filtrados.append(p)
+                    if not any(x in status for x in ["entreg", "realizada", "cancel"]):
+                        pedidos_final.append(p)
 
-        pedidos_filtrados.sort(key=lambda p: int(p.get("idPedido") or 0), reverse=True)
-
-        if not pedidos_filtrados:
-            send_slack_message(response_url, text=f"📭 Nenhum pedido encontrado para esta busca em {ano}.")
+        if not pedidos_final:
+            send_slack_message(response_url, text="📭 Nenhum resultado para esta busca.")
             return
 
-        # 5. Definição da Navegação
-        pedido_ref = pedidos_filtrados[0]
-        chave_escola = obter_chave_escola(pedido_ref)
-        val_nav = f"{marca}:::{ano}:::{chave_escola}"
+        # 3. Montagem da Resposta
+        p = pedidos_final[0]
         
-        menu_botoes = [
-            {"type": "button", "text": {"type": "plain_text", "text": "⏳ Ver em aberto"}, "value": val_nav, "action_id": "ver_pedidos_abertos_chave_unica"},
-            {"type": "button", "text": {"type": "plain_text", "text": "📊 Panorama de Produtos"}, "value": val_nav, "action_id": "ver_panorama_escola"}
-        ]
+        # BUSCA LOGÍSTICA NA PLANILHA (Sempre que for detalhe ou pedido único)
+        logistica = obter_logistica_planilha(p.get('idPedido'))
 
-        # TELA DE DETALHE (Acionado por busca de ID ou botão Detalhes)
+        # Layout Detalhado
         if id_pedido_especifico or tipo_comando == "itens":
-            p = pedidos_filtrados[0]
-            status = str(p.get('StatusPedido') or '—')
-            txt_topo = f"🔢 *Pedido:* {p.get('idPedido')}\n🏫 *Escola:* {p.get('Escola')}\n🚚 *Status:* {status}\n📅 *Data Pedido:* {p.get('DataPedido')}"
-            
-            # Adiciona info extra de finalização
-            s_lower = status.lower()
-            if 'realizada' in s_lower or 'entreg' in s_lower:
-                if p.get('DataEntrega'): txt_topo += f"\n✅ *Entrega Realizada em:* {p.get('DataEntrega')}"
-            elif 'cancel' in s_lower:
-                txt_topo += f"\n🚫 *Motivo:* {p.get('MotivoCancelamento') or 'Não informado'}"
+            txt_status = f"🚚 *Status ARCO:* {p.get('StatusPedido')}"
+            if logistica:
+                txt_status += f"\n🏁 *Status Planilha:* {logistica.get('status', '—')}"
 
             blocos = [
-                {"type": "section", "text": {"type": "mrkdwn", "text": txt_topo}},
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"📦 *Produtos do Pedido:*\n{formatar_lista_produtos(p.get('Produtos'))}"}},
-                {"type": "divider"}, {"type": "actions", "elements": menu_botoes}
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"🔢 *Pedido:* {p.get('idPedido')} | 🏫 {p.get('Escola')}\n{txt_status}"}}
             ]
+
+            if logistica:
+                info_transporte = (
+                    f"🚛 *Transportador:* {logistica.get('transportador', '—')}\n"
+                    f"📄 *Nota Fiscal:* {logistica.get('numero_nota', '—')}\n"
+                    f"📅 *Previsão Inicial:* {logistica.get('prev_inicial', '—')}\n"
+                    f"📍 *Data Entrega:* {logistica.get('data_entrega', '—')}"
+                )
+                blocos.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*Informações de Transporte:*\n{info_transporte}"}})
+
+            blocos.append({"type": "section", "text": {"type": "mrkdwn", "text": f"📦 *Produtos:*\n{formatar_lista_produtos(p.get('Produtos'))}"}})
             send_slack_message(response_url, blocks=blocos)
             return
 
-        # TELA DE PANORAMA
-        if tipo_comando == "panorama":
-            blocos = [{"type": "section", "text": {"type": "mrkdwn", "text": f"📊 *Panorama de Itens ({ano})*\n🏫 *{pedido_ref.get('Escola')}*"}}, {"type": "divider"}]
-            for p in pedidos_filtrados:
-                txt = f"🔢 *Pedido:* {p.get('idPedido')} | 🚚 {p.get('StatusPedido')}\n{formatar_lista_produtos(p.get('Produtos'))}"
-                blocos.append({"type": "section", "text": {"type": "mrkdwn", "text": txt}})
-                blocos.append({"type": "actions", "elements": [{"type": "button", "text": {"type": "plain_text", "text": "🔎 Detalhes"}, "value": f"{marca}:::{ano}:::{p.get('idPedido')}", "action_id": "ver_itens_pedido"}]})
-                blocos.append({"type": "divider"})
-            blocos.append({"type": "actions", "elements": menu_botoes})
-            send_slack_message(response_url, blocks=blocos)
-            return
-
-        # TELA DE LISTAGEM PADRÃO
-        counts = {}
-        for p in pedidos_filtrados: counts[p.get("StatusPedido")] = counts.get(p.get("StatusPedido"), 0) + 1
-        resumo = f"📊 *Resumo de Pedidos {ano} (Total: {len(pedidos_filtrados)})*\n🏫 *{pedido_ref.get('Escola')}*\n"
-        for s, c in counts.items(): resumo += f"• *{c}* - `{s}`\n"
-
-        blocos = [{"type": "section", "text": {"type": "mrkdwn", "text": resumo + "\n---"}}]
-        for p in pedidos_filtrados[offset : offset + 5]:
-            status_p = str(p.get('StatusPedido') or '—')
-            txt = f"🔢 *{p.get('idPedido')}* | 📦 {obter_qtd_total(p)} itens | 🚚 {status_p}"
-            if p.get('DataExpedicao'): txt += f"\n📤 *Expedido em:* {p.get('DataExpedicao')}"
-            
-            blocos.append({"type": "section", "text": {"type": "mrkdwn", "text": txt}})
-            blocos.append({"type": "actions", "elements": [{"type": "button", "text": {"type": "plain_text", "text": "🔎 Ver Detalhes"}, "value": f"{marca}:::{ano}:::{p.get('idPedido')}", "action_id": "ver_itens_pedido"}]})
-            blocos.append({"type": "divider"})
-
-        if len(pedidos_filtrados) > (offset + 5):
-            aid = "ver_pedidos_abertos_chave_unica" if "abertos" in tipo_comando else "ver_pedidos_chave_unica"
-            menu_botoes.append({"type": "button", "text": {"type": "plain_text", "text": "➕ Ver mais"}, "value": f"{marca}:::{ano}:::{chave_escola}:::{offset + 5}", "action_id": aid})
-
-        blocos.append({"type": "actions", "elements": menu_botoes})
+        # Listagem comum (Resumo)
+        blocos = [{"type": "section", "text": {"type": "mrkdwn", "text": f"📋 *Pedidos em Aberto - {p.get('Escola')}*"}}]
+        for item in pedidos_final[offset : offset + 5]:
+            blocos.append({"type": "section", "text": {"type": "mrkdwn", "text": f"🔢 *{item.get('idPedido')}* | 🚚 {item.get('StatusPedido')}"},
+                           "accessory": {"type": "button", "text": {"type": "plain_text", "text": "🔎 Detalhes"}, "value": f"{marca}:::{ano}:::{item.get('idPedido')}", "action_id": "ver_itens_pedido"}})
+        
         send_slack_message(response_url, blocks=blocos)
 
     except Exception as e:
-        logger.error(f"Erro: {e}", exc_info=True)
-        send_slack_message(response_url, text="Erro ao processar a consulta.")
+        logger.error(f"Erro: {e}")
+        send_slack_message(response_url, text="Erro ao processar consulta.")
 
 # --- Rotas Flask ---
-
-@app.route("/", methods=["GET", "HEAD"])
-def index(): return "Bot Ativo", 200
-
-@app.route("/keep-alive", methods=["GET"])
-def keep_alive(): return "OK", 200
-
 @app.route("/slack/commands", methods=["POST"])
 def slack_command():
     if not verify_slack_signature(request): return "Unauthorized", 401
     form = parse_qs(request.get_data().decode("utf-8"))
     threading.Thread(target=process_slack_command, args=(form.get("response_url", [""])[0], form.get("text", [""])[0])).start()
-    return jsonify({"response_type": "ephemeral", "text": "🛠️ Consultando ARCO..."}), 200
+    return jsonify({"response_type": "ephemeral", "text": "🛠️ Consultando ARCO + Planilha..."}), 200
 
 @app.route("/slack/interactive", methods=["POST"])
 def slack_interactive():
     if not verify_slack_signature(request): return "Unauthorized", 401
     payload = json.loads(request.form.get("payload"))
     aid, val = payload["actions"][0]["action_id"], payload["actions"][0]["value"]
-    cmds = {"ver_pedidos_chave_unica": "busca_chave", "ver_pedidos_abertos_chave_unica": "busca_chave_abertos", "ver_panorama_escola": "panorama", "ver_itens_pedido": "itens"}
-    if aid in cmds:
+    if aid == "ver_itens_pedido":
         p = val.split(":::")
-        m, a, c, o = p[0], p[1], p[2], (p[3] if len(p) > 3 else "0")
-        threading.Thread(target=process_slack_command, args=(payload["response_url"], f"{cmds[aid]} {m} {a} {c} {o}")).start()
+        threading.Thread(target=process_slack_command, args=(payload["response_url"], f"itens {p[0]} {p[1]} {p[2]}")).start()
     return "", 200
 
 if __name__ == "__main__":
