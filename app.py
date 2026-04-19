@@ -56,7 +56,7 @@ def verify_slack_signature(request):
     ).hexdigest()
     return compare_digest(computed_sig, slack_signature)
 
-def consultar_api_com_retry(url, payload, max_tentativas=5, intervalo_inicial=1, intervalo_maximo=60):
+def consultar_api_com_retry(url, payload, max_tentativas=3, intervalo_inicial=1, intervalo_maximo=15):
     tentativa = 0
     while tentativa < max_tentativas:
         tentativa += 1
@@ -93,12 +93,11 @@ def process_slack_command(response_url, texto_comando_slack):
     logger.info(f"Processando: {texto_comando_slack}")
 
     def send_slack_message(response_url, text=None, blocks=None, response_type="in_channel"):
-        # replace_original como True garante que a nova mensagem ocupe o lugar da velha
+        # Substitui a mensagem original apenas quando a resposta final está pronta
         payload = {
             "response_type": response_type,
             "replace_original": True
         }
-        
         if blocks: payload["blocks"] = blocks
         elif text: payload["text"] = text
         try: requests.post(response_url, json=payload, timeout=10)
@@ -122,11 +121,9 @@ def process_slack_command(response_url, texto_comando_slack):
         # 2. Preparação da Busca
         pedidos_payload = {
             "token": token_autenticacao, "Tipo": "pedido", "Marca": marca_api,
-            "AnoProjeto": ano_projeto_api, "DataPedidoInicial": "", "DataPedidoFinal": ""
+            "AnoProjeto": ano_projeto_api, "DataPedidoInicial": "", "DataPedidoFinal": "",
+            "Despachavel": "S" # REGRA DE OURO: SEMPRE TRAVADO EM 'S' PARA ITENS FÍSICOS
         }
-        
-        if tipo_comando != "busca_chave_finalizados":
-            pedidos_payload["Despachavel"] = "S"
 
         filtro_escola = None
         filtro_chave = None
@@ -160,6 +157,7 @@ def process_slack_command(response_url, texto_comando_slack):
         if filtro_chave:
             pedidos_filtrados = [p for p in pedidos_filtrados if str(p.get("CodigoAcesso") or "").strip() == filtro_chave or f"{str(p.get('Escola') or '').strip()}||{str(p.get('Cep') or '').strip()}" == filtro_chave]
         
+        # Filtros baseados puramente no STATUS, garantindo que o Despachavel S já trouxe apenas físicos
         if tipo_comando in ["escola_abertos", "busca_chave_abertos", "panorama"]:
             pedidos_filtrados = [p for p in pedidos_filtrados if all(x not in str(p.get("StatusPedido") or "").lower() for x in ["cancelado", "entrega", "devoluç", "exclui", "excluído"])]
         
@@ -316,7 +314,6 @@ def slack_command():
     response_url = form.get("response_url", [""])[0].strip()
     
     threading.Thread(target=process_slack_command, args=(response_url, text)).start()
-    # O comando inicial no chat AINDA precisa do aviso efêmero "Processando..." para criar o primeiro bloco visual
     return jsonify({"response_type": "ephemeral", "text": "🛠️ Processando consulta, aguarde..."}), 200
 
 @app.route("/slack/interactive", methods=["POST"])
@@ -342,7 +339,6 @@ def slack_interactive():
         
         threading.Thread(target=process_slack_command, args=(response_url, f"{cmds[aid]} {m} {a} {c} {offs}")).start()
     
-    # Retornar "" faz o Slack exibir o "loading" nativo no próprio botão clicado sem alterar a tela
     return "", 200
 
 if __name__ == "__main__":
