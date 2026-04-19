@@ -110,7 +110,7 @@ def process_slack_command(response_url, texto_comando_slack):
         marca_api = partes[1].strip() if len(partes) > 1 else "nave"
         ano_projeto_api = int(partes[2]) if len(partes) > 2 and partes[2].isdigit() else 2025
         
-        # Paginação: tenta ler o offset (início da lista) do final do comando
+        # Paginação: lê o offset (início da lista) do final do comando de forma segura
         offset = int(partes[-1]) if partes[-1].isdigit() and len(partes) > 4 else 0
 
         # 1. Autenticação
@@ -123,9 +123,13 @@ def process_slack_command(response_url, texto_comando_slack):
         # 2. Preparação da Busca
         pedidos_payload = {
             "token": token_autenticacao, "Tipo": "pedido", "Marca": marca_api,
-            "AnoProjeto": ano_projeto_api, "DataPedidoInicial": "", "DataPedidoFinal": "",
-            "Despachavel": "S"
+            "AnoProjeto": ano_projeto_api, "DataPedidoInicial": "", "DataPedidoFinal": ""
         }
+        
+        # A MÁGICA DOS CANCELADOS ACONTECE AQUI:
+        # Só incluímos "Despachavel: S" se não estivermos buscando o histórico de cancelados/entregues.
+        if tipo_comando != "busca_chave_finalizados":
+            pedidos_payload["Despachavel"] = "S"
 
         filtro_escola = None
         filtro_chave = None
@@ -149,7 +153,7 @@ def process_slack_command(response_url, texto_comando_slack):
         # 3. Consulta à API
         pedidos_brutos = consultar_api_com_retry(URL_PEDIDOS, pedidos_payload)
         if not isinstance(pedidos_brutos, list):
-            send_slack_message(response_url, text="Erro na resposta da API.")
+            send_slack_message(response_url, text="Erro na resposta da API ou dados não encontrados.")
             return
 
         # 4. Filtros de Negócio
@@ -159,13 +163,11 @@ def process_slack_command(response_url, texto_comando_slack):
         if filtro_chave:
             pedidos_filtrados = [p for p in pedidos_filtrados if str(p.get("CodigoAcesso") or "").strip() == filtro_chave or f"{str(p.get('Escola') or '').strip()}||{str(p.get('Cep') or '').strip()}" == filtro_chave]
         
-        # Filtros de Status (Abertos vs Finalizados)
+        # Filtros de Status
         if tipo_comando in ["escola_abertos", "busca_chave_abertos", "panorama"]:
-            # Exclui tudo que foi finalizado ou devolvido
             pedidos_filtrados = [p for p in pedidos_filtrados if all(x not in str(p.get("StatusPedido") or "").lower() for x in ["cancelado", "entrega", "devoluç", "exclui", "excluído"])]
         
         elif tipo_comando == "busca_chave_finalizados":
-            # Inclui apenas entregues, cancelados ou excluídos (e barra expressamente devoluções)
             pedidos_filtrados = [
                 p for p in pedidos_filtrados 
                 if any(x in str(p.get("StatusPedido") or "").lower() for x in ["entrega", "cancelado", "exclui", "excluído"]) 
@@ -178,10 +180,10 @@ def process_slack_command(response_url, texto_comando_slack):
             send_slack_message(response_url, text="Nenhum pedido encontrado para os critérios selecionados.")
             return
 
-        # Menu e Chave de Navegação Atualizados
+        # Menu e Chave de Navegação Atualizados (Agora usando ':::' para não dar conflito com '|')
         pedido_ref = pedidos_filtrados[0]
         chave_unica = obter_chave_escola(pedido_ref)
-        val_nav = f"{marca_api}|{ano_projeto_api}|{chave_unica}"
+        val_nav = f"{marca_api}:::{ano_projeto_api}:::{chave_unica}"
         
         menu_botoes = [
             {"type": "button", "text": {"type": "plain_text", "text": "🏁 Finalizados / Cancelados"}, "value": val_nav, "action_id": "ver_pedidos_finalizados_chave_unica"},
@@ -211,7 +213,7 @@ def process_slack_command(response_url, texto_comando_slack):
                 id_p = p.get('idPedido')
                 txt = f"🔢 *Pedido:* {id_p} | 📦 *Total:* {obter_qtd_total(p)} itens | 🚚 *Status:* {p.get('StatusPedido')}\n{formatar_lista_produtos(p.get('Produtos'))}"
                 blocos.append({"type": "section", "text": {"type": "mrkdwn", "text": txt}})
-                blocos.append({"type": "actions", "elements": [{"type": "button", "text": {"type": "plain_text", "text": f"🔎 Detalhes do {id_p}"}, "value": f"{marca_api}|{ano_projeto_api}|{id_p}", "action_id": "ver_itens_pedido"}]})
+                blocos.append({"type": "actions", "elements": [{"type": "button", "text": {"type": "plain_text", "text": f"🔎 Detalhes do {id_p}"}, "value": f"{marca_api}:::{ano_projeto_api}:::{id_p}", "action_id": "ver_itens_pedido"}]})
                 blocos.append({"type": "divider"})
             blocos.append({"type": "actions", "elements": menu_botoes})
             send_slack_message(response_url, blocks=blocos)
@@ -224,7 +226,6 @@ def process_slack_command(response_url, texto_comando_slack):
             for p in pedidos_filtrados:
                 s = p.get("StatusPedido") or "Desconhecido"
                 counts[s] = counts.get(s, 0) + 1
-            # Resumo atualizado incluindo a escola
             resumo_status = f"📊 *Resumo de Pedidos em Aberto (Total: {len(pedidos_filtrados)})*\n🏫 *{pedido_ref.get('Escola')}*\n"
             for s, c in counts.items(): resumo_status += f"• *{c}* - `{s}`\n"
             resumo_status += "---"
@@ -235,7 +236,6 @@ def process_slack_command(response_url, texto_comando_slack):
         blocos = []
         if resumo_status: blocos.append({"type": "section", "text": {"type": "mrkdwn", "text": resumo_status}})
         
-        # Paginação: Pega apenas 5 a partir do offset
         pedidos_pagina = pedidos_filtrados[offset : offset + 5]
         
         for p in pedidos_pagina:
@@ -243,7 +243,6 @@ def process_slack_command(response_url, texto_comando_slack):
             status = p.get('StatusPedido') or '—'
             status_lower = status.lower()
             
-            # Formatação baseada na visão selecionada
             if tipo_comando in ["escola_abertos", "busca_chave_abertos"]:
                 expedicao = p.get('DataExpedicao')
                 txt = f"🔢 *{id_p}* | 📦 {obter_qtd_total(p)} itens | 🚚 {status}"
@@ -259,7 +258,6 @@ def process_slack_command(response_url, texto_comando_slack):
                     txt += f"\n🚫 *Motivo:* {motivo}"
                     
             else:
-                # Busca Padrão (ex: primeira busca de escola)
                 txt = f"🔢 *Número do pedido:* {id_p} | 📦 *Total:* {obter_qtd_total(p)} itens\n🏫 *Escola:* {p.get('Escola')}\n🚚 *Status:* {status}\n📅 *Data Pedido:* {p.get('DataPedido')}"
                 if 'despachado' in status_lower or 'trânsito' in status_lower:
                     txt += f"\n🚛 *Transportadora:* {p.get('Transportadora') or '—'}"
@@ -271,7 +269,7 @@ def process_slack_command(response_url, texto_comando_slack):
                     txt += f"\n🚫 *Motivo Cancelamento:* {motivo}"
 
             blocos.append({"type": "section", "text": {"type": "mrkdwn", "text": txt}})
-            blocos.append({"type": "actions", "elements": [{"type": "button", "text": {"type": "plain_text", "text": f"🔎 Ver Detalhes do {id_p}"}, "value": f"{marca_api}|{ano_projeto_api}|{id_p}", "action_id": "ver_itens_pedido"}]})
+            blocos.append({"type": "actions", "elements": [{"type": "button", "text": {"type": "plain_text", "text": f"🔎 Ver Detalhes do {id_p}"}, "value": f"{marca_api}:::{ano_projeto_api}:::{id_p}", "action_id": "ver_itens_pedido"}]})
             blocos.append({"type": "divider"})
 
         # Lógica do Botão de Paginação
@@ -287,14 +285,13 @@ def process_slack_command(response_url, texto_comando_slack):
             btn_paginacao = {
                 "type": "button", 
                 "text": {"type": "plain_text", "text": f"➕ Ver próximos {mostrar} (Total: {len(pedidos_filtrados)})"}, 
-                "value": f"{marca_api}|{ano_projeto_api}|{chave_unica}|{prox_offset}", 
+                "value": f"{marca_api}:::{ano_projeto_api}:::{chave_unica}:::{prox_offset}", 
                 "action_id": action_id_paginacao
             }
             menu_botoes.append(btn_paginacao)
 
         blocos.append({"type": "actions", "elements": menu_botoes})
         
-        # Contexto de rodapé
         fim_idx = offset + 5 if len(pedidos_filtrados) > offset + 5 else len(pedidos_filtrados)
         blocos.append({"type": "context", "elements": [{"type": "mrkdwn", "text": f"_Mostrando {offset+1} a {fim_idx} de {len(pedidos_filtrados)} pedidos._"}]})
         
@@ -347,7 +344,13 @@ def slack_interactive():
     }
 
     if aid in cmds and val:
-        partes = val.split("|")
+        # FEEDBACK VISUAL RESTAURADO AQUI PARA ELIMINAR A SENSAÇÃO DE "TRAVAMENTO"
+        try:
+            requests.post(response_url, json={"response_type": "ephemeral", "text": "🛠️ Processando consulta, aguarde..."}, timeout=5)
+        except:
+            pass
+
+        partes = val.split(":::")
         m, a, c = partes[0], partes[1], partes[2]
         offs = partes[3] if len(partes) > 3 else "0"
         threading.Thread(target=process_slack_command, args=(response_url, f"{cmds[aid]} {m} {a} {c} {offs}")).start()
