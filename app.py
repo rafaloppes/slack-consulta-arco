@@ -42,15 +42,12 @@ def verify_slack_signature(request):
     """Verifica a assinatura da requisição do Slack."""
     if not SLACK_SIGNING_SECRET:
         return False
-
     slack_signature = request.headers.get("X-Slack-Signature")
     slack_timestamp = request.headers.get("X-Slack-Request-Timestamp")
     if not slack_signature or not slack_timestamp:
         return False
-
     if abs(time() - float(slack_timestamp)) > 60 * 5:
         return False
-
     body = request.get_data().decode("utf-8")
     sig_basestring = f"v0:{slack_timestamp}:{body}".encode("utf-8")
     computed_sig = "v0=" + hmac.new(
@@ -58,7 +55,6 @@ def verify_slack_signature(request):
         sig_basestring,
         hashlib.sha256
     ).hexdigest()
-
     return compare_digest(computed_sig, slack_signature)
 
 def consultar_api_com_retry(url, payload, max_tentativas=5, intervalo_inicial=1, intervalo_maximo=60):
@@ -73,28 +69,28 @@ def consultar_api_com_retry(url, payload, max_tentativas=5, intervalo_inicial=1,
             return res.json()
         except (requests.exceptions.Timeout, requests.exceptions.RequestException) as e:
             logger.warning(f"Tentativa {tentativa}/{max_tentativas} falhou: {e}")
-        
         if tentativa < max_tentativas:
             espera = min(intervalo_inicial * (2 ** (tentativa - 1)) + random.random(), intervalo_maximo)
             sleep(espera)
-            
     raise Exception(f"Falha ao consultar a API externa após {max_tentativas} tentativas.")
 
 def obter_chave_escola(pedido):
     """Gera a chave única da escola."""
     codigo_acesso = pedido.get('CodigoAcesso')
-    if codigo_acesso:
-        return str(codigo_acesso).strip()
+    if codigo_acesso: return str(codigo_acesso).strip()
     nome_exato = str(pedido.get('Escola') or '').strip()
     cep_escola = str(pedido.get('Cep') or '').strip()
     return f"{nome_exato}||{cep_escola}"
 
 def formatar_lista_produtos(produtos_raw):
     """Formata a string de produtos em bullet points limpos."""
-    if not produtos_raw:
-        return "• Nenhum item informado"
+    if not produtos_raw: return "• Nenhum item informado"
     produtos_limpos = produtos_raw.replace('|', ',').split(',')
     return "\n".join([f"• {item.strip()}" for item in produtos_limpos if item.strip()])
+
+def obter_qtd_total(p):
+    """Tenta obter a quantidade de produtos lidando com variações da API."""
+    return p.get('Qtd Produtos') or p.get('QtdProdutos') or '—'
 
 # --- Lógica Principal ---
 
@@ -105,25 +101,26 @@ def process_slack_command(response_url, texto_comando_slack):
         payload = {"response_type": response_type}
         if blocks: payload["blocks"] = blocks
         elif text: payload["text"] = text
-        try:
-            requests.post(response_url, json=payload, timeout=10)
-        except:
-            pass
+        try: requests.post(response_url, json=payload, timeout=10)
+        except: pass
 
     try:
         partes = texto_comando_slack.strip().split()
         tipo_comando = partes[0].strip().lower()
         marca_api = partes[1].strip() if len(partes) > 1 else "nave"
         ano_projeto_api = int(partes[2]) if len(partes) > 2 and partes[2].isdigit() else 2025
+        
+        # Paginação: tenta ler o offset (início da lista) do final do comando
+        offset = int(partes[-1]) if partes[-1].isdigit() and len(partes) > 4 else 0
 
-        # 1. Token
+        # 1. Autenticação
         token_data = consultar_api_com_retry(URL_TOKEN, {"token": TOKEN_STATICO})
         token_autenticacao = token_data.get("retorno", {}).get("token")
         if not token_autenticacao:
             send_slack_message(response_url, text="Erro ao gerar token ARCO.")
             return
 
-        # 2. Payload
+        # 2. Preparação da Busca
         pedidos_payload = {
             "token": token_autenticacao, "Tipo": "pedido", "Marca": marca_api,
             "AnoProjeto": ano_projeto_api, "DataPedidoInicial": "", "DataPedidoFinal": "",
@@ -133,9 +130,7 @@ def process_slack_command(response_url, texto_comando_slack):
         filtro_escola = None
         filtro_chave = None
         hoje = datetime.datetime.now()
-
-        def get_year_range(ano):
-            return f"{ano}-01-01 00:00:00", f"{ano}-12-31 23:59:59"
+        def get_year_range(ano): return f"{ano}-01-01 00:00:00", f"{ano}-12-31 23:59:59"
 
         if tipo_comando == "aging":
             dias = int(partes[3]) if len(partes) > 3 and partes[3].isdigit() else 7
@@ -144,151 +139,139 @@ def process_slack_command(response_url, texto_comando_slack):
         elif tipo_comando in ["pedido", "itens"]:
             pedidos_payload["Pedido"] = int(partes[3])
             pedidos_payload["DataPedidoInicial"], pedidos_payload["DataPedidoFinal"] = get_year_range(ano_projeto_api)
-        elif tipo_comando == "escola" or tipo_comando == "escola_abertos":
-            filtro_escola = " ".join(partes[3:]).strip().lower()
+        elif tipo_comando in ["escola", "escola_abertos"]:
+            filtro_escola = " ".join(partes[3:] if not partes[-1].isdigit() else partes[3:-1]).strip().lower()
             pedidos_payload["DataPedidoInicial"], pedidos_payload["DataPedidoFinal"] = get_year_range(ano_projeto_api)
         elif tipo_comando in ["busca_chave", "busca_chave_abertos", "panorama"]:
-            filtro_chave = " ".join(partes[3:]).strip()
+            filtro_chave = " ".join(partes[3:] if not partes[-1].isdigit() else partes[3:-1]).strip()
             pedidos_payload["DataPedidoInicial"], pedidos_payload["DataPedidoFinal"] = get_year_range(ano_projeto_api)
 
-        # 3. Consulta
+        # 3. Consulta à API
         pedidos_brutos = consultar_api_com_retry(URL_PEDIDOS, pedidos_payload)
         if not isinstance(pedidos_brutos, list):
-            send_slack_message(response_url, text="Erro na resposta da lista de pedidos.")
+            send_slack_message(response_url, text="Erro na resposta da API.")
             return
 
-        # 4. Filtros
+        # 4. Filtros de Negócio
         pedidos_filtrados = pedidos_brutos
         if filtro_escola:
             pedidos_filtrados = [p for p in pedidos_filtrados if filtro_escola in str(p.get("Escola") or "").lower()]
         if filtro_chave:
             pedidos_filtrados = [p for p in pedidos_filtrados if str(p.get("CodigoAcesso") or "").strip() == filtro_chave or f"{str(p.get('Escola') or '').strip()}||{str(p.get('Cep') or '').strip()}" == filtro_chave]
         
+        # Filtro de Abertos/Panorama: Remove Cancelados, Entregues e Devoluções
         if tipo_comando in ["escola_abertos", "busca_chave_abertos", "panorama"]:
-            pedidos_filtrados = [p for p in pedidos_filtrados if "cancelado" not in str(p.get("StatusPedido") or "").lower() and "entrega realizada" not in str(p.get("StatusPedido") or "").lower() and "devoluç" not in str(p.get("StatusPedido") or "").lower()]
+            pedidos_filtrados = [p for p in pedidos_filtrados if all(x not in str(p.get("StatusPedido") or "").lower() for x in ["cancelado", "entrega realizada", "devoluç"])]
 
         pedidos_filtrados.sort(key=lambda p: int(p.get("idPedido") or 0) if str(p.get("idPedido") or 0).isdigit() else 0, reverse=True)
 
         if not pedidos_filtrados:
-            send_slack_message(response_url, text="Nenhum pedido encontrado para os critérios.")
+            send_slack_message(response_url, text="Nenhum pedido encontrado.")
             return
 
-        # Menu de Navegação Universal
+        # Menu e Chave de Navegação
         pedido_ref = pedidos_filtrados[0]
         chave_unica = obter_chave_escola(pedido_ref)
         val_nav = f"{marca_api}|{ano_projeto_api}|{chave_unica}"
-        menu_nav = {
-            "type": "actions",
-            "elements": [
-                {"type": "button", "text": {"type": "plain_text", "text": "Ver 5 últimos"}, "value": val_nav, "action_id": "ver_pedidos_chave_unica"},
-                {"type": "button", "text": {"type": "plain_text", "text": "Ver em aberto"}, "value": val_nav, "action_id": "ver_pedidos_abertos_chave_unica"},
-                {"type": "button", "text": {"type": "plain_text", "text": "Panorama Geral"}, "value": val_nav, "action_id": "ver_panorama_escola"}
-            ]
-        }
+        
+        menu_botoes = [
+            {"type": "button", "text": {"type": "plain_text", "text": "Ver 5 últimos"}, "value": val_nav, "action_id": "ver_pedidos_chave_unica"},
+            {"type": "button", "text": {"type": "plain_text", "text": "Ver em aberto"}, "value": val_nav, "action_id": "ver_pedidos_abertos_chave_unica"},
+            {"type": "button", "text": {"type": "plain_text", "text": "Panorama de Produtos"}, "value": val_nav, "action_id": "ver_panorama_escola"}
+        ]
 
-        # 5. Formatação de Telas
+        # 5. Construção das Telas
+        
+        # TELA 1: DETALHE DE ITENS
         if tipo_comando == "itens":
             p = pedidos_filtrados[0]
-            qtd_t = p.get('Qtd Produtos')
-            if qtd_t is None: 
-                qtd_t = p.get('QtdProdutos', '—')
-
-            # Removido o total daqui para colocar junto aos itens
-            texto_detalhe_pedido = (
-                f"🔢 *Número do pedido:* {p.get('idPedido')}\n"
-                f"🏫 *Escola:* {p.get('Escola')}\n"
-                f"🚚 *Status:* {p.get('StatusPedido')}\n"
-                f"📅 *Data Pedido:* {p.get('DataPedido')}"
-            )
-
+            txt_topo = f"🔢 *Número do pedido:* {p.get('idPedido')}\n🏫 *Escola:* {p.get('Escola')}\n🚚 *Status:* {p.get('StatusPedido')}\n📅 *Data Pedido:* {p.get('DataPedido')}"
             blocos = [
-                {"type": "section", "text": {"type": "mrkdwn", "text": texto_detalhe_pedido}},
-                # Quantidade total agora aparece no título da lista de Itens
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"📦 *Itens do Pedido (Total: {qtd_t} itens):*\n{formatar_lista_produtos(p.get('Produtos'))}"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": txt_topo}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"📦 *Itens do Pedido (Total: {obter_qtd_total(p)} itens):*\n{formatar_lista_produtos(p.get('Produtos'))}"}},
                 {"type": "divider"},
-                menu_nav
+                {"type": "actions", "elements": menu_botoes}
             ]
             send_slack_message(response_url, blocks=blocos, response_type="ephemeral")
             return
 
+        # TELA 2: PANORAMA DE PRODUTOS
         if tipo_comando == "panorama":
             blocos = [{"type": "section", "text": {"type": "mrkdwn", "text": f"📊 *Panorama de Produtos em Andamento*\n🏫 *{pedido_ref.get('Escola')}*"}}, {"type": "divider"}]
             for p in pedidos_filtrados:
                 id_p = p.get('idPedido')
-                
-                qtd_t = p.get('Qtd Produtos')
-                if qtd_t is None: 
-                    qtd_t = p.get('QtdProdutos', '—')
-                
-                txt = f"🔢 *Pedido:* {id_p} | 📦 *Total:* {qtd_t} itens | 🚚 *Status:* {p.get('StatusPedido')}\n{formatar_lista_produtos(p.get('Produtos'))}"
+                txt = f"🔢 *Pedido:* {id_p} | 📦 *Total:* {obter_qtd_total(p)} itens | 🚚 *Status:* {p.get('StatusPedido')}\n{formatar_lista_produtos(p.get('Produtos'))}"
                 blocos.append({"type": "section", "text": {"type": "mrkdwn", "text": txt}})
-                
-                blocos.append({
-                    "type": "actions", 
-                    "elements": [{
-                        "type": "button", 
-                        "text": {"type": "plain_text", "text": f"🔎 Detalhes do {id_p}"}, 
-                        "value": f"{marca_api}|{ano_projeto_api}|{id_p}", 
-                        "action_id": "ver_itens_pedido"
-                    }]
-                })
+                blocos.append({"type": "actions", "elements": [{"type": "button", "text": {"type": "plain_text", "text": f"🔎 Detalhes do {id_p}"}, "value": f"{marca_api}|{ano_projeto_api}|{id_p}", "action_id": "ver_itens_pedido"}]})
                 blocos.append({"type": "divider"})
-                
-            blocos.append(menu_nav)
+            blocos.append({"type": "actions", "elements": menu_botoes})
             send_slack_message(response_url, blocks=blocos)
             return
 
-        # Tela Padrão (5 Pedidos)
-        blocos = [{"type": "section", "text": {"type": "mrkdwn", "text": "*📦 Resultados encontrados:*"}}]
-        for p in pedidos_filtrados[:5]:
+        # TELA 3: LISTAGEM COM RESUMO (Dashboard) E PAGINAÇÃO
+        # Se for "Ver em aberto", gera o resumo de status
+        resumo_status = ""
+        if tipo_comando in ["escola_abertos", "busca_chave_abertos"]:
+            counts = {}
+            for p in pedidos_filtrados:
+                s = p.get("StatusPedido") or "Desconhecido"
+                counts[s] = counts.get(s, 0) + 1
+            resumo_status = f"📊 *Resumo de Pedidos em Aberto (Total: {len(pedidos_filtrados)})*\n"
+            for s, c in counts.items(): resumo_status += f"• *{c}* - `{s}`\n"
+            resumo_status += "---"
+
+        blocos = []
+        if resumo_status: blocos.append({"type": "section", "text": {"type": "mrkdwn", "text": resumo_status}})
+        
+        # Paginação: Pega apenas 5 a partir do offset
+        pedidos_pagina = pedidos_filtrados[offset : offset + 5]
+        
+        for p in pedidos_pagina:
             id_p = p.get('idPedido')
             status = p.get('StatusPedido') or '—'
+            expedicao = p.get('DataExpedicao')
+            txt = f"🔢 *{id_p}* | 📦 {obter_qtd_total(p)} itens | 🚚 {status}"
+            if expedicao: txt += f"\n📤 *Expedido em:* {expedicao}"
             
-            qtd_t = p.get('Qtd Produtos')
-            if qtd_t is None: 
-                qtd_t = p.get('QtdProdutos', '—')
-            
-            txt = f"🔢 *Número do pedido:* {id_p} | 📦 *Total:* {qtd_t} itens\n🏫 *Escola:* {p.get('Escola')}\n🚚 *Status:* {status}\n📅 *Data Pedido:* {p.get('DataPedido')}"
-            
-            if 'despachado' in status.lower() or 'trânsito' in status.lower():
-                transportadora = p.get('Transportadora')
-                if transportadora:
-                    txt += f"\n🚛 *Transportadora:* {transportadora}"
-            elif 'entrega realizada' in status.lower():
-                data_entrega_real = p.get('DataEntrega')
-                if data_entrega_real:
-                    txt += f"\n✅ *Entrega Realizada:* {data_entrega_real}"
-                transportadora = p.get('Transportadora')
-                if transportadora:
-                    txt += f"\n🚛 *Transportadora:* {transportadora}"
-            
-            if 'cancelado' in status.lower():
-                motivo = p.get('MotivoCancelamento') or 'Não informado'
-                txt += f"\n🚫 *Motivo Cancelamento:* {motivo}"
+            # Adiciona informações extras se não for visão resumida
+            if tipo_comando not in ["escola_abertos", "busca_chave_abertos"]:
+                txt = f"🔢 *Número do pedido:* {id_p} | 📦 *Total:* {obter_qtd_total(p)} itens\n🏫 *Escola:* {p.get('Escola')}\n🚚 *Status:* {status}\n📅 *Data Pedido:* {p.get('DataPedido')}"
+                if 'despachado' in status.lower() or 'trânsito' in status.lower():
+                    txt += f"\n🚛 *Transportadora:* {p.get('Transportadora') or '—'}"
 
             blocos.append({"type": "section", "text": {"type": "mrkdwn", "text": txt}})
-            blocos.append({
-                "type": "actions", 
-                "elements": [{
-                    "type": "button", 
-                    "text": {"type": "plain_text", "text": "📦 Ver Itens do Pedido", "emoji": True}, 
-                    "value": f"{marca_api}|{ano_projeto_api}|{id_p}", 
-                    "action_id": "ver_itens_pedido"
-                }]
-            })
+            blocos.append({"type": "actions", "elements": [{"type": "button", "text": {"type": "plain_text", "text": f"🔎 Ver Detalhes do {id_p}"}, "value": f"{marca_api}|{ano_projeto_api}|{id_p}", "action_id": "ver_itens_pedido"}]})
             blocos.append({"type": "divider"})
-            
-        blocos.append(menu_nav)
+
+        # Lógica do Botão de Paginação
+        if len(pedidos_filtrados) > (offset + 5):
+            prox_offset = offset + 5
+            total_restante = len(pedidos_filtrados) - prox_offset
+            mostrar = 5 if total_restante > 5 else total_restante
+            btn_paginacao = {
+                "type": "button", 
+                "text": {"type": "plain_text", "text": f"➕ Ver próximos {mostrar} (Total: {len(pedidos_filtrados)})"}, 
+                "value": f"{marca_api}|{ano_projeto_api}|{chave_unica}|{prox_offset}", 
+                "action_id": "ver_pedidos_abertos_chave_unica" if "abertos" in tipo_comando else "ver_pedidos_chave_unica"
+            }
+            menu_botoes.append(btn_paginacao)
+
+        blocos.append({"type": "actions", "elements": menu_botoes})
+        
+        # Contexto de rodapé
+        fim_idx = offset + 5 if len(pedidos_filtrados) > offset + 5 else len(pedidos_filtrados)
+        blocos.append({"type": "context", "elements": [{"type": "mrkdwn", "text": f"_Mostrando {offset+1} a {fim_idx} de {len(pedidos_filtrados)} pedidos encontrados._"}]})
+        
         send_slack_message(response_url, blocks=blocos)
 
     except Exception as e:
         logger.error(f"Erro: {e}", exc_info=True)
-        send_slack_message(response_url, text="Ocorreu um erro inesperado.")
+        send_slack_message(response_url, text="Ocorreu um erro inesperado ao processar os dados.")
 
 # --- Rotas Flask ---
 
 @app.route("/", methods=["GET", "HEAD"])
-def index(): return "OK", 200
+def index(): return "Bot Ativo", 200
 
 @app.route("/keep-alive", methods=["GET"])
 def keep_alive(): return "OK", 200
@@ -327,8 +310,10 @@ def slack_interactive():
     }
 
     if aid in cmds and val:
-        m, a, c = val.split("|", 2)
-        threading.Thread(target=process_slack_command, args=(response_url, f"{cmds[aid]} {m} {a} {c}")).start()
+        partes = val.split("|")
+        m, a, c = partes[0], partes[1], partes[2]
+        offs = partes[3] if len(partes) > 3 else "0"
+        threading.Thread(target=process_slack_command, args=(response_url, f"{cmds[aid]} {m} {a} {c} {offs}")).start()
     return "", 200
 
 if __name__ == "__main__":
