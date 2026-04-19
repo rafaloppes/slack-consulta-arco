@@ -93,7 +93,6 @@ def process_slack_command(response_url, texto_comando_slack):
     logger.info(f"Processando: {texto_comando_slack}")
 
     def send_slack_message(response_url, text=None, blocks=None, response_type="in_channel"):
-        # Substitui a mensagem original apenas quando a resposta final está pronta
         payload = {
             "response_type": response_type,
             "replace_original": True
@@ -122,7 +121,7 @@ def process_slack_command(response_url, texto_comando_slack):
         pedidos_payload = {
             "token": token_autenticacao, "Tipo": "pedido", "Marca": marca_api,
             "AnoProjeto": ano_projeto_api, "DataPedidoInicial": "", "DataPedidoFinal": "",
-            "Despachavel": "S" # REGRA DE OURO: SEMPRE TRAVADO EM 'S' PARA ITENS FÍSICOS
+            "Despachavel": "S"
         }
 
         filtro_escola = None
@@ -157,14 +156,16 @@ def process_slack_command(response_url, texto_comando_slack):
         if filtro_chave:
             pedidos_filtrados = [p for p in pedidos_filtrados if str(p.get("CodigoAcesso") or "").strip() == filtro_chave or f"{str(p.get('Escola') or '').strip()}||{str(p.get('Cep') or '').strip()}" == filtro_chave]
         
-        # Filtros baseados puramente no STATUS, garantindo que o Despachavel S já trouxe apenas físicos
+        # Filtros de Status estritos
         if tipo_comando in ["escola_abertos", "busca_chave_abertos", "panorama"]:
-            pedidos_filtrados = [p for p in pedidos_filtrados if all(x not in str(p.get("StatusPedido") or "").lower() for x in ["cancelado", "entrega", "devoluç", "exclui", "excluído"])]
+            # Exclui entrega realizada e cancelado rigorosamente, além de devoluções
+            pedidos_filtrados = [p for p in pedidos_filtrados if all(x not in str(p.get("StatusPedido") or "").lower() for x in ["cancelado", "entrega realizada", "devoluç"])]
         
         elif tipo_comando == "busca_chave_finalizados":
+            # Inclui estritamente entrega realizada OU cancelado, e barra devoluções
             pedidos_filtrados = [
                 p for p in pedidos_filtrados 
-                if any(x in str(p.get("StatusPedido") or "").lower() for x in ["entrega", "cancelado", "exclui", "excluído"]) 
+                if any(x in str(p.get("StatusPedido") or "").lower() for x in ["entrega realizada", "cancelado"]) 
                 and "devoluç" not in str(p.get("StatusPedido") or "").lower()
             ]
 
@@ -239,10 +240,10 @@ def process_slack_command(response_url, texto_comando_slack):
                 
             elif tipo_comando == "busca_chave_finalizados":
                 txt = f"🔢 *{id_p}* | 📦 {obter_qtd_total(p)} itens | 🚚 {status}"
-                if 'entrega' in status_lower:
+                if 'entrega realizada' in status_lower:
                     dt_entrega = p.get('DataEntrega')
                     if dt_entrega: txt += f"\n✅ *Entregue em:* {dt_entrega}"
-                elif 'cancelado' in status_lower or 'exclu' in status_lower:
+                elif 'cancelado' in status_lower:
                     motivo = p.get('MotivoCancelamento') or 'Não informado'
                     txt += f"\n🚫 *Motivo:* {motivo}"
                     
@@ -250,10 +251,10 @@ def process_slack_command(response_url, texto_comando_slack):
                 txt = f"🔢 *Número do pedido:* {id_p} | 📦 *Total:* {obter_qtd_total(p)} itens\n🏫 *Escola:* {p.get('Escola')}\n🚚 *Status:* {status}\n📅 *Data Pedido:* {p.get('DataPedido')}"
                 if 'despachado' in status_lower or 'trânsito' in status_lower:
                     txt += f"\n🚛 *Transportadora:* {p.get('Transportadora') or '—'}"
-                elif 'entrega' in status_lower:
+                elif 'entrega realizada' in status_lower:
                     dt_entrega = p.get('DataEntrega')
                     if dt_entrega: txt += f"\n✅ *Entrega Realizada:* {dt_entrega}"
-                elif 'cancelado' in status_lower or 'exclu' in status_lower:
+                elif 'cancelado' in status_lower:
                     motivo = p.get('MotivoCancelamento') or 'Não informado'
                     txt += f"\n🚫 *Motivo Cancelamento:* {motivo}"
 
