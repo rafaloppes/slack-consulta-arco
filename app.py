@@ -23,6 +23,8 @@ TOKEN_STATICO = os.getenv("ARCO_API_KEY")
 URL_TOKEN = os.getenv("ARCO_URL_TOKEN")
 URL_PEDIDOS = os.getenv("ARCO_URL_PEDIDOS")
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
+# O Render fornece essa variável automaticamente com a URL pública da sua API
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL") 
 
 # --- Verificação na Inicialização ---
 if not all([TOKEN_STATICO, URL_TOKEN, URL_PEDIDOS, SLACK_SIGNING_SECRET]):
@@ -207,7 +209,6 @@ def process_slack_command(response_url, texto_comando_slack):
                 filtro_escola = " ".join(partes[3:]).strip().lower()
                 pedidos_payload["DataPedidoInicial"], pedidos_payload["DataPedidoFinal"] = set_date_range_for_year(ano_projeto_api)
 
-            # Novo bloco para lidar com a busca exata pelos botões interativos
             elif tipo_comando in ["busca_chave", "busca_chave_abertos"]:
                 if len(partes) < 4:
                     return
@@ -237,18 +238,15 @@ def process_slack_command(response_url, texto_comando_slack):
         # --- 4. Aplicar Filtros no Lado do Cliente ---
         pedidos_filtrados = pedidos_brutos
         
-        # Filtro de texto normal (se o usuário digitar /comando escola)
         if filtro_escola:
             pedidos_filtrados = [p for p in pedidos_filtrados if filtro_escola in p.get("Escola", "").lower()]
 
-        # Filtro exato com a Chave Única (Acionado pelos botões)
         if tipo_comando in ["busca_chave", "busca_chave_abertos"] and filtro_chave:
             pedidos_filtrados = [
                 p for p in pedidos_filtrados
                 if str(p.get("CodigoAcesso", "")).strip() == filtro_chave or f"{p.get('Escola', '').strip()}||{p.get('Cep', '').strip()}" == filtro_chave
             ]
 
-        # Lógica para remover pedidos finalizados
         if tipo_comando in ["escola_abertos", "busca_chave_abertos"]:
             status_fechados = ['entrega realizada', 'cancelado', 'devolução finalizada']
             pedidos_filtrados = [
@@ -256,9 +254,7 @@ def process_slack_command(response_url, texto_comando_slack):
                 if p.get("StatusPedido", "").lower() not in status_fechados
             ]
 
-        # =====================================================================
-        # CORREÇÃO VITAL: Ordenação para garantir que os itens no topo são os MAIS RECENTES
-        # =====================================================================
+        # Ordenação vital para pegar os mais recentes
         pedidos_filtrados.sort(
             key=lambda p: int(p.get("idPedido", 0)) if str(p.get("idPedido", 0)).isdigit() else 0, 
             reverse=True
@@ -312,7 +308,6 @@ def process_slack_command(response_url, texto_comando_slack):
             status_pedido = p.get('StatusPedido', '—')
             status_lower = status_pedido.lower()
             
-            # Gera a Chave Única com base no primeiro pedido encontrado
             if i == 0:
                 codigo_acesso = p.get('CodigoAcesso')
                 if codigo_acesso:
@@ -371,7 +366,6 @@ def process_slack_command(response_url, texto_comando_slack):
 
             blocos_de_resposta.append({"type": "divider"})
 
-        # Insere os botões de controle ao final caso tenhamos uma chave válida
         if chave_para_botao and tipo_comando not in ["busca_chave", "busca_chave_abertos"]:
             valor_botao_escola = f"{marca_para_botao}|{ano_para_botao}|{chave_para_botao}"
             blocos_de_resposta.append({
@@ -403,6 +397,38 @@ def process_slack_command(response_url, texto_comando_slack):
     except Exception as e:
         logger.error(f"Erro inesperado no processamento do comando Slack (thread): {str(e)}", exc_info=True)
         send_slack_message(response_url, text="Ocorreu um erro inesperado ao processar seu comando. Por favor, tente novamente.")
+
+
+# --- Anti-Hibernação (Apenas horário comercial BRT) ---
+@app.route("/keep-alive", methods=["GET"])
+def keep_alive_route():
+    """Rota simples apenas para o Render receber tráfego e não hibernar."""
+    return "OK", 200
+
+def start_keep_alive_loop():
+    """Ping contínuo na própria API restrito das 04h às 22h (Horário de Brasília)."""
+    if not RENDER_EXTERNAL_URL:
+        logger.warning("RENDER_EXTERNAL_URL não encontrada. Anti-Hibernação desativado.")
+        return
+
+    while True:
+        sleep(600)  # Pausa por 10 minutos (600 segundos)
+        try:
+            # Pega o horário atual em UTC e diminui 3 horas para chegar no fuso de Brasília (BRT)
+            agora_utc = datetime.datetime.utcnow()
+            agora_brt = agora_utc - datetime.timedelta(hours=3)
+            
+            # Checa se o horário comercial é válido (maior/igual a 4 e menor que 22)
+            if 4 <= agora_brt.hour < 22:
+                logger.info(f"[{agora_brt.strftime('%H:%M:%S')} BRT] Executando ping de anti-hibernação...")
+                requests.get(f"{RENDER_EXTERNAL_URL}/keep-alive", timeout=10)
+            else:
+                # Caso esteja entre 22h00 e 03h59
+                logger.info(f"[{agora_brt.strftime('%H:%M:%S')} BRT] Fora do horário comercial. API liberada para hibernar.")
+                
+        except Exception as e:
+            logger.warning(f"Falha no ping de anti-hibernação: {e}")
+
 
 # --- Rota Flask para Comandos Slack ---
 
@@ -472,7 +498,6 @@ def slack_interactive():
             mensagem_imediata = None
             
             try:
-                # Novas rotas baseadas na Chave Única
                 if action_id == "ver_pedidos_chave_unica" and action_value:
                     marca, ano, chave_escola = action_value.split("|", 2)
                     novo_comando_texto = f"busca_chave {marca} {ano} {chave_escola}"
@@ -483,7 +508,6 @@ def slack_interactive():
                     novo_comando_texto = f"busca_chave_abertos {marca} {ano} {chave_escola}"
                     mensagem_imediata = f"Buscando pedidos em aberto da escola..."
 
-                # Mantida a rota de Itens
                 elif action_id == "ver_itens_pedido" and action_value:
                     marca, ano, id_pedido = action_value.split("|", 2)
                     novo_comando_texto = f"itens {marca} {ano} {id_pedido}"
@@ -516,6 +540,12 @@ def slack_interactive():
 
 if __name__ == "__main__":
     logger.info("Configurações carregadas e verificadas.")
+    
+    # Inicia a thread que vai manter o servidor acordado com base no horário
+    keep_alive_thread = threading.Thread(target=start_keep_alive_loop, daemon=True)
+    keep_alive_thread.start()
+    logger.info("Sistema anti-hibernação (horário restrito) iniciado.")
+
     port = int(os.getenv("PORT", 5000))
     logger.info(f"Iniciando servidor Flask na porta {port}")
     app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
