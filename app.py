@@ -23,7 +23,6 @@ TOKEN_STATICO = os.getenv("ARCO_API_KEY")
 URL_TOKEN = os.getenv("ARCO_URL_TOKEN")
 URL_PEDIDOS = os.getenv("ARCO_URL_PEDIDOS")
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
-# O Render fornece essa variável automaticamente com a URL pública da sua API
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL") 
 
 # --- Verificação na Inicialização ---
@@ -238,25 +237,29 @@ def process_slack_command(response_url, texto_comando_slack):
         # --- 4. Aplicar Filtros no Lado do Cliente ---
         pedidos_filtrados = pedidos_brutos
         
+        # Filtros blindados com "or ''" para evitar TypeError/AttributeError caso a API mande null
         if filtro_escola:
-            pedidos_filtrados = [p for p in pedidos_filtrados if filtro_escola in p.get("Escola", "").lower()]
+            pedidos_filtrados = [
+                p for p in pedidos_filtrados 
+                if filtro_escola in str(p.get("Escola") or "").lower()
+            ]
 
         if tipo_comando in ["busca_chave", "busca_chave_abertos"] and filtro_chave:
             pedidos_filtrados = [
                 p for p in pedidos_filtrados
-                if str(p.get("CodigoAcesso", "")).strip() == filtro_chave or f"{p.get('Escola', '').strip()}||{p.get('Cep', '').strip()}" == filtro_chave
+                if str(p.get("CodigoAcesso") or "").strip() == filtro_chave or f"{str(p.get('Escola') or '').strip()}||{str(p.get('Cep') or '').strip()}" == filtro_chave
             ]
 
         if tipo_comando in ["escola_abertos", "busca_chave_abertos"]:
             status_fechados = ['entrega realizada', 'cancelado', 'devolução finalizada']
             pedidos_filtrados = [
                 p for p in pedidos_filtrados
-                if p.get("StatusPedido", "").lower() not in status_fechados
+                if str(p.get("StatusPedido") or "").lower() not in status_fechados
             ]
 
-        # Ordenação vital para pegar os mais recentes
+        # Ordenação blindada
         pedidos_filtrados.sort(
-            key=lambda p: int(p.get("idPedido", 0)) if str(p.get("idPedido", 0)).isdigit() else 0, 
+            key=lambda p: int(p.get("idPedido") or 0) if str(p.get("idPedido") or 0).isdigit() else 0, 
             reverse=True
         )
 
@@ -271,12 +274,12 @@ def process_slack_command(response_url, texto_comando_slack):
         if tipo_comando == "itens":
             pedido_unico = pedidos_filtrados[0]
             
-            id_pedido_itens = pedido_unico.get('idPedido', '—')
-            escola = pedido_unico.get('Escola', '—')
-            cidade = pedido_unico.get('Cidade', '—')
-            uf = pedido_unico.get('Uf', '—')
-            status = pedido_unico.get('StatusPedido', '—')
-            data_pedido = pedido_unico.get('DataPedido', '—')
+            id_pedido_itens = pedido_unico.get('idPedido') or '—'
+            escola = pedido_unico.get('Escola') or '—'
+            cidade = pedido_unico.get('Cidade') or '—'
+            uf = pedido_unico.get('Uf') or '—'
+            status = pedido_unico.get('StatusPedido') or '—'
+            data_pedido = pedido_unico.get('DataPedido') or '—'
 
             texto_detalhe_pedido = (
                 f"🔢 *Número do pedido:* {id_pedido_itens}\n"
@@ -285,7 +288,7 @@ def process_slack_command(response_url, texto_comando_slack):
                 f"📅 *Data Pedido:* {data_pedido}"
             )
 
-            produtos_raw = pedido_unico.get('Produtos', 'Nenhum item encontrado.')
+            produtos_raw = pedido_unico.get('Produtos') or 'Nenhum item encontrado.'
             produtos_formatados = "\n".join([item.strip() for item in produtos_raw.split(',') if item.strip()])
             
             blocos_de_resposta = [
@@ -305,7 +308,7 @@ def process_slack_command(response_url, texto_comando_slack):
         ano_para_botao = ano_projeto_api
 
         for i, p in enumerate(pedidos_filtrados[:5]):
-            status_pedido = p.get('StatusPedido', '—')
+            status_pedido = str(p.get('StatusPedido') or '—')
             status_lower = status_pedido.lower()
             
             if i == 0:
@@ -313,15 +316,15 @@ def process_slack_command(response_url, texto_comando_slack):
                 if codigo_acesso:
                     chave_para_botao = str(codigo_acesso).strip()
                 else:
-                    nome_exato = p.get('Escola', '').strip()
-                    cep_escola = p.get('Cep', '').strip()
+                    nome_exato = str(p.get('Escola') or '').strip()
+                    cep_escola = str(p.get('Cep') or '').strip()
                     chave_para_botao = f"{nome_exato}||{cep_escola}"
 
             texto_do_pedido = ""
-            texto_do_pedido += f"🔢 *Número do pedido:* {p.get('idPedido', '—')}\n"
-            texto_do_pedido += f"🏫 *Escola:* {p.get('Escola', '—')} - {p.get('Cidade', '—')}/{p.get('Uf', '—')}\n"
+            texto_do_pedido += f"🔢 *Número do pedido:* {p.get('idPedido') or '—'}\n"
+            texto_do_pedido += f"🏫 *Escola:* {p.get('Escola') or '—'} - {p.get('Cidade') or '—'}/{p.get('Uf') or '—'}\n"
             texto_do_pedido += f"🚚 *Status:* {status_pedido}\n"
-            texto_do_pedido += f"📅 *Data Pedido:* {p.get('DataPedido', '—')}\n"
+            texto_do_pedido += f"📅 *Data Pedido:* {p.get('DataPedido') or '—'}\n"
 
             transportadora = p.get('Transportadora')
             data_expedicao = p.get('DataExpedicao')
@@ -414,16 +417,13 @@ def start_keep_alive_loop():
     while True:
         sleep(600)  # Pausa por 10 minutos (600 segundos)
         try:
-            # Pega o horário atual em UTC e diminui 3 horas para chegar no fuso de Brasília (BRT)
             agora_utc = datetime.datetime.utcnow()
             agora_brt = agora_utc - datetime.timedelta(hours=3)
             
-            # Checa se o horário comercial é válido (maior/igual a 4 e menor que 22)
             if 4 <= agora_brt.hour < 22:
                 logger.info(f"[{agora_brt.strftime('%H:%M:%S')} BRT] Executando ping de anti-hibernação...")
                 requests.get(f"{RENDER_EXTERNAL_URL}/keep-alive", timeout=10)
             else:
-                # Caso esteja entre 22h00 e 03h59
                 logger.info(f"[{agora_brt.strftime('%H:%M:%S')} BRT] Fora do horário comercial. API liberada para hibernar.")
                 
         except Exception as e:
@@ -541,7 +541,6 @@ def slack_interactive():
 if __name__ == "__main__":
     logger.info("Configurações carregadas e verificadas.")
     
-    # Inicia a thread que vai manter o servidor acordado com base no horário
     keep_alive_thread = threading.Thread(target=start_keep_alive_loop, daemon=True)
     keep_alive_thread.start()
     logger.info("Sistema anti-hibernação (horário restrito) iniciado.")
