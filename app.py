@@ -121,7 +121,7 @@ def process_slack_command(response_url, texto_comando_slack):
         pedidos_payload = {
             "token": token_autenticacao, "Tipo": "pedido", "Marca": marca_api,
             "AnoProjeto": ano_projeto_api, "DataPedidoInicial": "", "DataPedidoFinal": "",
-            "Despachavel": "S"
+            "Despachavel": "S"  # MANTIDO: Garantindo que só olhemos itens físicos
         }
 
         filtro_escola = None
@@ -156,13 +156,10 @@ def process_slack_command(response_url, texto_comando_slack):
         if filtro_chave:
             pedidos_filtrados = [p for p in pedidos_filtrados if str(p.get("CodigoAcesso") or "").strip() == filtro_chave or f"{str(p.get('Escola') or '').strip()}||{str(p.get('Cep') or '').strip()}" == filtro_chave]
         
-        # Filtros de Status estritos
         if tipo_comando in ["escola_abertos", "busca_chave_abertos", "panorama"]:
-            # Exclui entrega realizada e cancelado rigorosamente, além de devoluções
             pedidos_filtrados = [p for p in pedidos_filtrados if all(x not in str(p.get("StatusPedido") or "").lower() for x in ["cancelado", "entrega realizada", "devoluç"])]
         
         elif tipo_comando == "busca_chave_finalizados":
-            # Inclui estritamente entrega realizada OU cancelado, e barra devoluções
             pedidos_filtrados = [
                 p for p in pedidos_filtrados 
                 if any(x in str(p.get("StatusPedido") or "").lower() for x in ["entrega realizada", "cancelado"]) 
@@ -171,9 +168,26 @@ def process_slack_command(response_url, texto_comando_slack):
 
         pedidos_filtrados.sort(key=lambda p: int(p.get("idPedido") or 0) if str(p.get("idPedido") or 0).isdigit() else 0, reverse=True)
 
+        # ---------------------------------------------------------------------
+        # CORREÇÃO DA RUA SEM SAÍDA: O bot não vai mais sumir com o menu!
+        # ---------------------------------------------------------------------
         if not pedidos_filtrados:
-            send_slack_message(response_url, text="Nenhum pedido encontrado para os critérios selecionados.")
+            blocos_vazios = [{"type": "section", "text": {"type": "mrkdwn", "text": "📭 *Nenhum pedido encontrado para esta visualização.*"}}]
+            
+            # Se já estivermos navegando por uma escola, recriamos os botões
+            if filtro_chave:
+                val_nav_vazio = f"{marca_api}:::{ano_projeto_api}:::{filtro_chave}"
+                menu_botoes_vazio = [
+                    {"type": "button", "text": {"type": "plain_text", "text": "🏁 Finalizados / Cancelados"}, "value": val_nav_vazio, "action_id": "ver_pedidos_finalizados_chave_unica"},
+                    {"type": "button", "text": {"type": "plain_text", "text": "⏳ Ver em aberto"}, "value": val_nav_vazio, "action_id": "ver_pedidos_abertos_chave_unica"},
+                    {"type": "button", "text": {"type": "plain_text", "text": "📊 Panorama de Produtos"}, "value": val_nav_vazio, "action_id": "ver_panorama_escola"}
+                ]
+                blocos_vazios.append({"type": "divider"})
+                blocos_vazios.append({"type": "actions", "elements": menu_botoes_vazio})
+                
+            send_slack_message(response_url, blocks=blocos_vazios)
             return
+        # ---------------------------------------------------------------------
 
         pedido_ref = pedidos_filtrados[0]
         chave_unica = obter_chave_escola(pedido_ref)
