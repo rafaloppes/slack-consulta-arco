@@ -68,7 +68,6 @@ def consultar_api_com_retry(url, payload, max_tentativas=5, intervalo_inicial=1,
         tentativa += 1
         try:
             headers = {'Content-Type': 'application/json'}
-            # TIMEOUT AUMENTADO PARA 45s PARA EVITAR ERROS DE COMUNICAÇÃO
             res = requests.post(url, json=payload, headers=headers, timeout=45)
             res.raise_for_status()
             return res.json()
@@ -190,8 +189,13 @@ def process_slack_command(response_url, texto_comando_slack):
         # 5. Formatação de Telas
         if tipo_comando == "itens":
             p = pedidos_filtrados[0]
+            # Extração segura da quantidade para lidar com variações da API
+            qtd_t = p.get('Qtd Produtos')
+            if qtd_t is None: 
+                qtd_t = p.get('QtdProdutos', '—')
+
             blocos = [
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"🔢 *Pedido:* {p.get('idPedido')}\n🏫 *Escola:* {p.get('Escola')}\n🚚 *Status:* {p.get('StatusPedido')}\n📅 *Data:* {p.get('DataPedido')}"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"🔢 *Pedido:* {p.get('idPedido')}\n🏫 *Escola:* {p.get('Escola')}\n📦 *Total:* {qtd_t} itens\n🚚 *Status:* {p.get('StatusPedido')}\n📅 *Data:* {p.get('DataPedido')}"}},
                 {"type": "section", "text": {"type": "mrkdwn", "text": f"*📦 Itens:*\n{formatar_lista_produtos(p.get('Produtos'))}"}},
                 {"type": "divider"},
                 menu_nav
@@ -203,11 +207,27 @@ def process_slack_command(response_url, texto_comando_slack):
             blocos = [{"type": "section", "text": {"type": "mrkdwn", "text": f"📊 *Panorama de Produtos em Andamento*\n🏫 *{pedido_ref.get('Escola')}*"}}, {"type": "divider"}]
             for p in pedidos_filtrados:
                 id_p = p.get('idPedido')
-                qtd_t = p.get('Qtd Produtos') or p.get('QtdProdutos') or '—'
+                
+                # Extração segura da quantidade
+                qtd_t = p.get('Qtd Produtos')
+                if qtd_t is None: 
+                    qtd_t = p.get('QtdProdutos', '—')
+                
                 txt = f"🔢 *Pedido:* {id_p} | 📦 *Total:* {qtd_t} itens | 🚚 *Status:* {p.get('StatusPedido')}\n{formatar_lista_produtos(p.get('Produtos'))}"
                 blocos.append({"type": "section", "text": {"type": "mrkdwn", "text": txt}})
-                blocos.append({"type": "actions", "elements": [{"type": "button", "text": {"type": "plain_text", "text": f"🔎 Detalhes do {id_p}"}, "value": f"{marca_api}|{ano_projeto_api}|{id_p}", "action_id": "ver_itens_pedido"}]})
+                
+                # Botão específico para ver os detalhes deste pedido
+                blocos.append({
+                    "type": "actions", 
+                    "elements": [{
+                        "type": "button", 
+                        "text": {"type": "plain_text", "text": f"🔎 Detalhes do {id_p}"}, 
+                        "value": f"{marca_api}|{ano_projeto_api}|{id_p}", 
+                        "action_id": "ver_itens_pedido"
+                    }]
+                })
                 blocos.append({"type": "divider"})
+                
             blocos.append(menu_nav)
             send_slack_message(response_url, blocks=blocos)
             return
@@ -216,17 +236,44 @@ def process_slack_command(response_url, texto_comando_slack):
         blocos = [{"type": "section", "text": {"type": "mrkdwn", "text": "*📦 Resultados encontrados:*"}}]
         for p in pedidos_filtrados[:5]:
             id_p = p.get('idPedido')
-            qtd_t = p.get('Qtd Produtos') or p.get('QtdProdutos') or '—'
             status = p.get('StatusPedido') or '—'
+            
+            # Extração segura da quantidade
+            qtd_t = p.get('Qtd Produtos')
+            if qtd_t is None: 
+                qtd_t = p.get('QtdProdutos', '—')
+            
             txt = f"🔢 *Pedido:* {id_p} | 📦 *Total:* {qtd_t} itens\n🏫 *Escola:* {p.get('Escola')}\n🚚 *Status:* {status}\n📅 *Data:* {p.get('DataPedido')}"
             
-            # Adiciona Logística se disponível
+            # Adiciona Transporte (se disponível e dependendo do status) - REMOVIDO CAMPO PREVISÃO
             if 'despachado' in status.lower() or 'trânsito' in status.lower():
-                txt += f"\n🚛 *Transporte:* {p.get('Transportadora')}\n🗓️ *Previsão:* {p.get('PrevisaoEntrega') or '—'}"
+                transportadora = p.get('Transportadora')
+                if transportadora:
+                    txt += f"\n🚛 *Transporte:* {transportadora}"
+            elif 'entrega realizada' in status.lower():
+                data_entrega_real = p.get('DataEntrega')
+                if data_entrega_real:
+                    txt += f"\n✅ *Entrega Realizada:* {data_entrega_real}"
+                transportadora = p.get('Transportadora')
+                if transportadora:
+                    txt += f"\n🚛 *Transporte:* {transportadora}"
+            
+            if 'cancelado' in status.lower():
+                motivo = p.get('MotivoCancelamento') or 'Não informado'
+                txt += f"\n🚫 *Motivo Cancelamento:* {motivo}"
 
             blocos.append({"type": "section", "text": {"type": "mrkdwn", "text": txt}})
-            blocos.append({"type": "actions", "elements": [{"type": "button", "text": {"type": "plain_text", "text": "📦 Ver Itens"}, "value": f"{marca_api}|{ano_projeto_api}|{id_p}", "action_id": "ver_itens_pedido"}]})
+            blocos.append({
+                "type": "actions", 
+                "elements": [{
+                    "type": "button", 
+                    "text": {"type": "plain_text", "text": "📦 Ver Itens"}, 
+                    "value": f"{marca_api}|{ano_projeto_api}|{id_p}", 
+                    "action_id": "ver_itens_pedido"
+                }]
+            })
             blocos.append({"type": "divider"})
+            
         blocos.append(menu_nav)
         send_slack_message(response_url, blocks=blocos)
 
