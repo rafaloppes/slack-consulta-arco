@@ -91,13 +91,13 @@ def process_slack_command(response_url, texto_comando_slack):
         marca = partes[1]
         ano = int(partes[2])
         
-        # --- CORREÇÃO DA LEITURA DE ARGUMENTOS ---
-        # Se for pedido/itens, o último item é o ID e não existe offset.
+        # Leitura correta do ID do pedido vs Termo de busca de escola
         if tipo_comando in ["pedido", "itens"]:
-            filtro_chave = partes[3]
+            id_pedido_especifico = partes[3]
+            filtro_chave = ""
             offset = 0
         else:
-            # Para buscas de lista, verifica se o último item é um número de paginação
+            id_pedido_especifico = None
             if partes[-1].isdigit() and len(partes) > 4:
                 offset = int(partes[-1])
                 filtro_chave = " ".join(partes[3:-1]).strip()
@@ -117,8 +117,8 @@ def process_slack_command(response_url, texto_comando_slack):
             "token": token, "Tipo": "pedido", "Marca": marca, "AnoProjeto": ano,
             "DataPedidoInicial": "", "DataPedidoFinal": "", "Despachavel": "S"
         }
-        if tipo_comando in ["pedido", "itens"]: 
-            payload["Pedido"] = int(filtro_chave)
+        if id_pedido_especifico: 
+            payload["Pedido"] = int(id_pedido_especifico)
 
         # 3. Consulta
         pedidos_brutos = consultar_api_com_retry(URL_PEDIDOS, payload)
@@ -126,18 +126,17 @@ def process_slack_command(response_url, texto_comando_slack):
             send_slack_message(response_url, text="A API não retornou uma lista válida.")
             return
 
-        # 4. Filtro por Escola (Identificação Robusta)
+        # 4. Filtro por Escola (Apenas se NÃO for busca por ID específico)
         pedidos_da_escola = []
-        for p in pedidos_brutos:
-            # Compara chave direta ou busca o termo dentro do nome da escola (case insensitive)
-            chave_p = obter_chave_escola(p).lower()
+        if id_pedido_especifico:
+            pedidos_da_escola = pedidos_brutos # API já filtrou pelo ID
+        else:
             termo_busca = filtro_chave.lower()
-            nome_escola_p = str(p.get("Escola") or "").lower()
-            
-            if termo_busca == chave_p or termo_busca in nome_escola_p:
-                pedidos_da_escola.append(p)
-
-        logger.info(f"DEBUG: Encontrados {len(pedidos_da_escola)} pedidos para a chave '{filtro_chave}'")
+            for p in pedidos_brutos:
+                chave_p = obter_chave_escola(p).lower()
+                nome_escola_p = str(p.get("Escola") or "").lower()
+                if termo_busca == chave_p or termo_busca in nome_escola_p:
+                    pedidos_da_escola.append(p)
 
         # 5. Filtros de Status
         pedidos_filtrados = []
@@ -157,13 +156,17 @@ def process_slack_command(response_url, texto_comando_slack):
         # Tratamento de lista vazia
         if not pedidos_filtrados:
             msg = "📭 *Nenhum pedido encontrado nesta categoria.*"
-            val_nav = f"{marca}:::{ano}:::{filtro_chave}"
-            botoes = [
-                {"type": "button", "text": {"type": "plain_text", "text": "🏁 Finalizados / Cancelados"}, "value": val_nav, "action_id": "ver_pedidos_finalizados_chave_unica"},
-                {"type": "button", "text": {"type": "plain_text", "text": "⏳ Ver em aberto"}, "value": val_nav, "action_id": "ver_pedidos_abertos_chave_unica"},
-                {"type": "button", "text": {"type": "plain_text", "text": "📊 Panorama de Produtos"}, "value": val_nav, "action_id": "ver_panorama_escola"}
-            ]
-            send_slack_message(response_url, blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": msg}}, {"type": "actions", "elements": botoes}])
+            # Se for uma escola, mostra os botões para navegação
+            if not id_pedido_especifico:
+                val_nav = f"{marca}:::{ano}:::{filtro_chave}"
+                botoes = [
+                    {"type": "button", "text": {"type": "plain_text", "text": "🏁 Finalizados / Cancelados"}, "value": val_nav, "action_id": "ver_pedidos_finalizados_chave_unica"},
+                    {"type": "button", "text": {"type": "plain_text", "text": "⏳ Ver em aberto"}, "value": val_nav, "action_id": "ver_pedidos_abertos_chave_unica"},
+                    {"type": "button", "text": {"type": "plain_text", "text": "📊 Panorama de Produtos"}, "value": val_nav, "action_id": "ver_panorama_escola"}
+                ]
+                send_slack_message(response_url, blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": msg}}, {"type": "actions", "elements": botoes}])
+            else:
+                send_slack_message(response_url, text=msg)
             return
 
         # 6. Montagem da Resposta
