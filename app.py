@@ -121,7 +121,7 @@ def process_slack_command(response_url, texto_comando_slack):
         pedidos_payload = {
             "token": token_autenticacao, "Tipo": "pedido", "Marca": marca_api,
             "AnoProjeto": ano_projeto_api, "DataPedidoInicial": "", "DataPedidoFinal": "",
-            "Despachavel": "S"
+            "Despachavel": "S" # Sempre Físico
         }
 
         filtro_escola = None
@@ -156,19 +156,22 @@ def process_slack_command(response_url, texto_comando_slack):
         if filtro_chave:
             pedidos_filtrados = [p for p in pedidos_filtrados if str(p.get("CodigoAcesso") or "").strip() == filtro_chave or f"{str(p.get('Escola') or '').strip()}||{str(p.get('Cep') or '').strip()}" == filtro_chave]
         
-        # FILTROS DE STATUS CORRIGIDOS (Case Insensitive)
+        # LOGICA DE FILTRO REFORMULADA PARA SER MAIS ABRANGENTE
         if tipo_comando in ["escola_abertos", "busca_chave_abertos", "panorama"]:
-            pedidos_filtrados = [p for p in pedidos_filtrados if all(x not in str(p.get("StatusPedido") or "").lower() for x in ["cancelado", "entrega realizada", "devoluç"])]
+            # Só mostra o que NÃO contiver "realizada" (entrega) ou "cancelado" ou "devolução"
+            pedidos_filtrados = [p for p in pedidos_filtrados if all(x not in str(p.get("StatusPedido") or "").lower() for x in ["realizada", "cancelado", "devoluç"])]
         
         elif tipo_comando == "busca_chave_finalizados":
+            # FILTRO MAIS FORTE: Procura palavras-chave parciais para evitar erro de espaço/maiuscula
             pedidos_filtrados = [
                 p for p in pedidos_filtrados 
-                if any(x in str(p.get("StatusPedido") or "").lower() for x in ["entrega realizada", "cancelado"]) 
+                if ( ("realizada" in str(p.get("StatusPedido") or "").lower()) or ("cancelado" in str(p.get("StatusPedido") or "").lower()) )
                 and "devoluç" not in str(p.get("StatusPedido") or "").lower()
             ]
 
         pedidos_filtrados.sort(key=lambda p: int(p.get("idPedido") or 0) if str(p.get("idPedido") or 0).isdigit() else 0, reverse=True)
 
+        # Tratamento de lista vazia com manutenção de menu
         if not pedidos_filtrados:
             msg_vazia = "📭 *Nenhum pedido encontrado para esta visualização.*"
             blocos_vazios = [{"type": "section", "text": {"type": "mrkdwn", "text": msg_vazia}}]
@@ -179,6 +182,7 @@ def process_slack_command(response_url, texto_comando_slack):
                     {"type": "button", "text": {"type": "plain_text", "text": "⏳ Ver em aberto"}, "value": val_nav_vazio, "action_id": "ver_pedidos_abertos_chave_unica"},
                     {"type": "button", "text": {"type": "plain_text", "text": "📊 Panorama de Produtos"}, "value": val_nav_vazio, "action_id": "ver_panorama_escola"}
                 ]
+                blocos_vazios.append({"type": "divider"})
                 blocos_vazios.append({"type": "actions", "elements": menu_vazio})
             send_slack_message(response_url, blocks=blocos_vazios)
             return
@@ -248,7 +252,7 @@ def process_slack_command(response_url, texto_comando_slack):
                 
             elif tipo_comando == "busca_chave_finalizados":
                 txt = f"🔢 *{id_p}* | 📦 {obter_qtd_total(p)} itens | 🚚 {status}"
-                if 'entrega realizada' in status_lower:
+                if 'realizada' in status_lower:
                     dt_entrega = p.get('DataEntrega')
                     if dt_entrega: txt += f"\n✅ *Entregue em:* {dt_entrega}"
                 elif 'cancelado' in status_lower:
@@ -259,7 +263,7 @@ def process_slack_command(response_url, texto_comando_slack):
                 txt = f"🔢 *Número do pedido:* {id_p} | 📦 *Total:* {obter_qtd_total(p)} itens\n🏫 *Escola:* {p.get('Escola')}\n🚚 *Status:* {status}\n📅 *Data Pedido:* {p.get('DataPedido')}"
                 if 'despachado' in status_lower or 'trânsito' in status_lower:
                     txt += f"\n🚛 *Transportadora:* {p.get('Transportadora') or '—'}"
-                elif 'entrega realizada' in status_lower:
+                elif 'realizada' in status_lower:
                     dt_entrega = p.get('DataEntrega')
                     if dt_entrega: txt += f"\n✅ *Entrega Realizada:* {dt_entrega}"
                 elif 'cancelado' in status_lower:
