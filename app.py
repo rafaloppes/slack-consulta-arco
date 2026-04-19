@@ -39,7 +39,6 @@ if not all([TOKEN_STATICO, URL_TOKEN, URL_PEDIDOS, SLACK_SIGNING_SECRET]):
 # --- Funções Auxiliares ---
 
 def verify_slack_signature(request):
-    """Verifica a assinatura da requisição do Slack."""
     if not SLACK_SIGNING_SECRET:
         return False
     slack_signature = request.headers.get("X-Slack-Signature")
@@ -58,7 +57,6 @@ def verify_slack_signature(request):
     return compare_digest(computed_sig, slack_signature)
 
 def consultar_api_com_retry(url, payload, max_tentativas=5, intervalo_inicial=1, intervalo_maximo=60):
-    """Consulta uma API com retry e timeout estendido (45s)."""
     tentativa = 0
     while tentativa < max_tentativas:
         tentativa += 1
@@ -75,7 +73,6 @@ def consultar_api_com_retry(url, payload, max_tentativas=5, intervalo_inicial=1,
     raise Exception(f"Falha ao consultar a API externa após {max_tentativas} tentativas.")
 
 def obter_chave_escola(pedido):
-    """Gera a chave única da escola."""
     codigo_acesso = pedido.get('CodigoAcesso')
     if codigo_acesso: return str(codigo_acesso).strip()
     nome_exato = str(pedido.get('Escola') or '').strip()
@@ -83,13 +80,11 @@ def obter_chave_escola(pedido):
     return f"{nome_exato}||{cep_escola}"
 
 def formatar_lista_produtos(produtos_raw):
-    """Formata a string de produtos em bullet points limpos."""
     if not produtos_raw: return "• Nenhum item informado"
     produtos_limpos = produtos_raw.replace('|', ',').split(',')
     return "\n".join([f"• {item.strip()}" for item in produtos_limpos if item.strip()])
 
 def obter_qtd_total(p):
-    """Tenta obter a quantidade de produtos lidando com variações da API."""
     return p.get('Qtd Produtos') or p.get('QtdProdutos') or '—'
 
 # --- Lógica Principal ---
@@ -98,7 +93,12 @@ def process_slack_command(response_url, texto_comando_slack):
     logger.info(f"Processando: {texto_comando_slack}")
 
     def send_slack_message(response_url, text=None, blocks=None, response_type="in_channel"):
-        payload = {"response_type": response_type}
+        # replace_original como True garante que a nova mensagem ocupe o lugar da velha
+        payload = {
+            "response_type": response_type,
+            "replace_original": True
+        }
+        
         if blocks: payload["blocks"] = blocks
         elif text: payload["text"] = text
         try: requests.post(response_url, json=payload, timeout=10)
@@ -110,7 +110,6 @@ def process_slack_command(response_url, texto_comando_slack):
         marca_api = partes[1].strip() if len(partes) > 1 else "nave"
         ano_projeto_api = int(partes[2]) if len(partes) > 2 and partes[2].isdigit() else 2025
         
-        # Paginação: lê o offset (início da lista) do final do comando de forma segura
         offset = int(partes[-1]) if partes[-1].isdigit() and len(partes) > 4 else 0
 
         # 1. Autenticação
@@ -126,8 +125,6 @@ def process_slack_command(response_url, texto_comando_slack):
             "AnoProjeto": ano_projeto_api, "DataPedidoInicial": "", "DataPedidoFinal": ""
         }
         
-        # A MÁGICA DOS CANCELADOS ACONTECE AQUI:
-        # Só incluímos "Despachavel: S" se não estivermos buscando o histórico de cancelados/entregues.
         if tipo_comando != "busca_chave_finalizados":
             pedidos_payload["Despachavel"] = "S"
 
@@ -163,7 +160,6 @@ def process_slack_command(response_url, texto_comando_slack):
         if filtro_chave:
             pedidos_filtrados = [p for p in pedidos_filtrados if str(p.get("CodigoAcesso") or "").strip() == filtro_chave or f"{str(p.get('Escola') or '').strip()}||{str(p.get('Cep') or '').strip()}" == filtro_chave]
         
-        # Filtros de Status
         if tipo_comando in ["escola_abertos", "busca_chave_abertos", "panorama"]:
             pedidos_filtrados = [p for p in pedidos_filtrados if all(x not in str(p.get("StatusPedido") or "").lower() for x in ["cancelado", "entrega", "devoluç", "exclui", "excluído"])]
         
@@ -180,7 +176,6 @@ def process_slack_command(response_url, texto_comando_slack):
             send_slack_message(response_url, text="Nenhum pedido encontrado para os critérios selecionados.")
             return
 
-        # Menu e Chave de Navegação Atualizados (Agora usando ':::' para não dar conflito com '|')
         pedido_ref = pedidos_filtrados[0]
         chave_unica = obter_chave_escola(pedido_ref)
         val_nav = f"{marca_api}:::{ano_projeto_api}:::{chave_unica}"
@@ -192,8 +187,6 @@ def process_slack_command(response_url, texto_comando_slack):
         ]
 
         # 5. Construção das Telas
-        
-        # TELA 1: DETALHE DE ITENS
         if tipo_comando == "itens":
             p = pedidos_filtrados[0]
             txt_topo = f"🔢 *Número do pedido:* {p.get('idPedido')}\n🏫 *Escola:* {p.get('Escola')}\n🚚 *Status:* {p.get('StatusPedido')}\n📅 *Data Pedido:* {p.get('DataPedido')}"
@@ -206,7 +199,6 @@ def process_slack_command(response_url, texto_comando_slack):
             send_slack_message(response_url, blocks=blocos, response_type="ephemeral")
             return
 
-        # TELA 2: PANORAMA DE PRODUTOS
         if tipo_comando == "panorama":
             blocos = [{"type": "section", "text": {"type": "mrkdwn", "text": f"📊 *Panorama de Produtos em Andamento*\n🏫 *{pedido_ref.get('Escola')}*"}}, {"type": "divider"}]
             for p in pedidos_filtrados:
@@ -219,7 +211,6 @@ def process_slack_command(response_url, texto_comando_slack):
             send_slack_message(response_url, blocks=blocos)
             return
 
-        # TELA 3: LISTAGEM COM RESUMO (Dashboard) E PAGINAÇÃO
         resumo_status = ""
         if tipo_comando in ["escola_abertos", "busca_chave_abertos"]:
             counts = {}
@@ -272,13 +263,12 @@ def process_slack_command(response_url, texto_comando_slack):
             blocos.append({"type": "actions", "elements": [{"type": "button", "text": {"type": "plain_text", "text": f"🔎 Ver Detalhes do {id_p}"}, "value": f"{marca_api}:::{ano_projeto_api}:::{id_p}", "action_id": "ver_itens_pedido"}]})
             blocos.append({"type": "divider"})
 
-        # Lógica do Botão de Paginação
         if len(pedidos_filtrados) > (offset + 5):
             prox_offset = offset + 5
             total_restante = len(pedidos_filtrados) - prox_offset
             mostrar = 5 if total_restante > 5 else total_restante
             
-            action_id_paginacao = "ver_pedidos_chave_unica" # Padrão
+            action_id_paginacao = "ver_pedidos_chave_unica" 
             if "abertos" in tipo_comando: action_id_paginacao = "ver_pedidos_abertos_chave_unica"
             elif "finalizados" in tipo_comando: action_id_paginacao = "ver_pedidos_finalizados_chave_unica"
             
@@ -324,8 +314,10 @@ def slack_command():
     form = parse_qs(request.get_data().decode("utf-8"))
     text = form.get("text", [""])[0].strip()
     response_url = form.get("response_url", [""])[0].strip()
+    
     threading.Thread(target=process_slack_command, args=(response_url, text)).start()
-    return jsonify({"response_type": "ephemeral", "text": "🛠️ Processando consulta..."}), 200
+    # O comando inicial no chat AINDA precisa do aviso efêmero "Processando..." para criar o primeiro bloco visual
+    return jsonify({"response_type": "ephemeral", "text": "🛠️ Processando consulta, aguarde..."}), 200
 
 @app.route("/slack/interactive", methods=["POST"])
 def slack_interactive():
@@ -344,16 +336,13 @@ def slack_interactive():
     }
 
     if aid in cmds and val:
-        # FEEDBACK VISUAL RESTAURADO AQUI PARA ELIMINAR A SENSAÇÃO DE "TRAVAMENTO"
-        try:
-            requests.post(response_url, json={"response_type": "ephemeral", "text": "🛠️ Processando consulta, aguarde..."}, timeout=5)
-        except:
-            pass
-
         partes = val.split(":::")
         m, a, c = partes[0], partes[1], partes[2]
         offs = partes[3] if len(partes) > 3 else "0"
+        
         threading.Thread(target=process_slack_command, args=(response_url, f"{cmds[aid]} {m} {a} {c} {offs}")).start()
+    
+    # Retornar "" faz o Slack exibir o "loading" nativo no próprio botão clicado sem alterar a tela
     return "", 200
 
 if __name__ == "__main__":
