@@ -25,15 +25,8 @@ URL_PEDIDOS = os.getenv("ARCO_URL_PEDIDOS")
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL") 
 
-# --- Verificação na Inicialização ---
 if not all([TOKEN_STATICO, URL_TOKEN, URL_PEDIDOS, SLACK_SIGNING_SECRET]):
-    required = [var for var, value in {
-        "ARCO_API_KEY": TOKEN_STATICO,
-        "ARCO_URL_TOKEN": URL_TOKEN,
-        "ARCO_URL_PEDIDOS": URL_PEDIDOS,
-        "SLACK_SIGNING_SECRET": SLACK_SIGNING_SECRET
-    }.items() if not value]
-    logger.critical(f"Variáveis de ambiente obrigatórias não configuradas: {', '.join(required)}. Encerrando.")
+    logger.critical("Faltam variáveis de ambiente.")
     sys.exit(1)
 
 # --- Funções Auxiliares ---
@@ -79,7 +72,7 @@ def obter_qtd_total(p):
 # --- Lógica Principal ---
 
 def process_slack_command(response_url, texto_comando_slack):
-    logger.info(f"Processando comando: {texto_comando_slack}")
+    logger.info(f"Iniciando processamento: {texto_comando_slack}")
 
     def send_slack_message(response_url, text=None, blocks=None):
         payload = {"response_type": "in_channel", "replace_original": True}
@@ -90,11 +83,27 @@ def process_slack_command(response_url, texto_comando_slack):
 
     try:
         partes = texto_comando_slack.strip().split()
+        if len(partes) < 4:
+            send_slack_message(response_url, text="Formato incorreto. Use: /comando <tipo> <marca> <ano> <valor>")
+            return
+
         tipo_comando = partes[0].lower()
         marca = partes[1]
         ano = int(partes[2])
-        offset = int(partes[-1]) if partes[-1].isdigit() and len(partes) > 4 else 0
-        filtro_chave = " ".join(partes[3:] if not partes[-1].isdigit() else partes[3:-1]).strip()
+        
+        # --- CORREÇÃO DA LEITURA DE ARGUMENTOS ---
+        # Se for pedido/itens, o último item é o ID e não existe offset.
+        if tipo_comando in ["pedido", "itens"]:
+            filtro_chave = partes[3]
+            offset = 0
+        else:
+            # Para buscas de lista, verifica se o último item é um número de paginação
+            if partes[-1].isdigit() and len(partes) > 4:
+                offset = int(partes[-1])
+                filtro_chave = " ".join(partes[3:-1]).strip()
+            else:
+                offset = 0
+                filtro_chave = " ".join(partes[3:]).strip()
 
         # 1. Autenticação
         token_data = consultar_api_com_retry(URL_TOKEN, {"token": TOKEN_STATICO})
@@ -108,41 +117,37 @@ def process_slack_command(response_url, texto_comando_slack):
             "token": token, "Tipo": "pedido", "Marca": marca, "AnoProjeto": ano,
             "DataPedidoInicial": "", "DataPedidoFinal": "", "Despachavel": "S"
         }
-        if tipo_comando in ["pedido", "itens"]: payload["Pedido"] = int(filtro_chave)
+        if tipo_comando in ["pedido", "itens"]: 
+            payload["Pedido"] = int(filtro_chave)
 
         # 3. Consulta
         pedidos_brutos = consultar_api_com_retry(URL_PEDIDOS, payload)
         if not isinstance(pedidos_brutos, list):
-            send_slack_message(response_url, text="A API não retornou uma lista de pedidos válida.")
+            send_slack_message(response_url, text="A API não retornou uma lista válida.")
             return
 
-        # 4. Filtro por Escola (Identificação)
-        # Se viemos de um botão, a filtro_chave é o código de acesso ou nome||cep
+        # 4. Filtro por Escola (Identificação Robusta)
         pedidos_da_escola = []
         for p in pedidos_brutos:
-            chave_p = obter_chave_escola(p)
-            # Fallback: Se o código de acesso falhar (comum em cancelados), tenta ver se a chave está contida no nome da escola
-            if chave_p == filtro_chave or filtro_chave in str(p.get("Escola") or ""):
+            # Compara chave direta ou busca o termo dentro do nome da escola (case insensitive)
+            chave_p = obter_chave_escola(p).lower()
+            termo_busca = filtro_chave.lower()
+            nome_escola_p = str(p.get("Escola") or "").lower()
+            
+            if termo_busca == chave_p or termo_busca in nome_escola_p:
                 pedidos_da_escola.append(p)
 
-        # LOG DE DEBUG (Aparecerá no teu Render)
-        logger.info(f"DEBUG: Encontrados {len(pedidos_da_escola)} pedidos totais para a chave {filtro_chave}")
+        logger.info(f"DEBUG: Encontrados {len(pedidos_da_escola)} pedidos para a chave '{filtro_chave}'")
 
         # 5. Filtros de Status
         pedidos_filtrados = []
         for p in pedidos_da_escola:
             status = str(p.get("StatusPedido") or "").lower()
-            
-            # DEBUG INDIVIDUAL
-            logger.info(f"DEBUG: Pedido {p.get('idPedido')} | Status: {status}")
-
             if tipo_comando in ["escola_abertos", "busca_chave_abertos", "panorama"]:
-                if not any(x in status for x in ["entreg", "cancel", "devoluç"]):
+                if not any(x in status for x in ["entreg", "realizada", "cancel", "devoluç"]):
                     pedidos_filtrados.append(p)
-            
             elif tipo_comando == "busca_chave_finalizados":
-                # Filtro mais abrangente para não falhar por causa de uma letra
-                if any(x in status for x in ["entreg", "cancel"]) and "devoluç" not in status:
+                if any(x in status for x in ["entreg", "realizada", "cancel"]) and "devoluç" not in status:
                     pedidos_filtrados.append(p)
             else:
                 pedidos_filtrados.append(p)
@@ -195,7 +200,7 @@ def process_slack_command(response_url, texto_comando_slack):
             send_slack_message(response_url, blocks=blocos)
             return
 
-        # TELA: LISTAGEM (ABERTOS OU FINALIZADOS)
+        # TELA: LISTAGEM
         resumo = ""
         if "abertos" in tipo_comando:
             counts = {}
@@ -211,8 +216,7 @@ def process_slack_command(response_url, texto_comando_slack):
             status = str(p.get('StatusPedido') or '—')
             id_p = p.get('idPedido')
             txt = f"🔢 *{id_p}* | 📦 {obter_qtd_total(p)} itens | 🚚 {status}"
-            
-            if 'entreg' in status.lower():
+            if 'entreg' in status.lower() or 'realizada' in status.lower():
                 if p.get('DataEntrega'): txt += f"\n✅ *Entregue em:* {p.get('DataEntrega')}"
             elif 'cancel' in status.lower():
                 txt += f"\n🚫 *Motivo:* {p.get('MotivoCancelamento') or 'Não informado'}"
@@ -234,7 +238,7 @@ def process_slack_command(response_url, texto_comando_slack):
 
     except Exception as e:
         logger.error(f"Erro: {e}", exc_info=True)
-        send_slack_message(response_url, text="Ocorreu um erro ao processar os dados.")
+        send_slack_message(response_url, text=f"Erro ao processar dados: {str(e)}")
 
 # --- Rotas Flask ---
 
