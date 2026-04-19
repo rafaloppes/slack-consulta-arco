@@ -189,14 +189,22 @@ def process_slack_command(response_url, texto_comando_slack):
         # 5. Formatação de Telas
         if tipo_comando == "itens":
             p = pedidos_filtrados[0]
-            # Extração segura da quantidade para lidar com variações da API
             qtd_t = p.get('Qtd Produtos')
             if qtd_t is None: 
                 qtd_t = p.get('QtdProdutos', '—')
 
+            # Removido o total daqui para colocar junto aos itens
+            texto_detalhe_pedido = (
+                f"🔢 *Número do pedido:* {p.get('idPedido')}\n"
+                f"🏫 *Escola:* {p.get('Escola')}\n"
+                f"🚚 *Status:* {p.get('StatusPedido')}\n"
+                f"📅 *Data Pedido:* {p.get('DataPedido')}"
+            )
+
             blocos = [
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"🔢 *Pedido:* {p.get('idPedido')}\n🏫 *Escola:* {p.get('Escola')}\n📦 *Total:* {qtd_t} itens\n🚚 *Status:* {p.get('StatusPedido')}\n📅 *Data:* {p.get('DataPedido')}"}},
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"*📦 Itens:*\n{formatar_lista_produtos(p.get('Produtos'))}"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": texto_detalhe_pedido}},
+                # Quantidade total agora aparece no título da lista de Itens
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"📦 *Itens do Pedido (Total: {qtd_t} itens):*\n{formatar_lista_produtos(p.get('Produtos'))}"}},
                 {"type": "divider"},
                 menu_nav
             ]
@@ -208,7 +216,6 @@ def process_slack_command(response_url, texto_comando_slack):
             for p in pedidos_filtrados:
                 id_p = p.get('idPedido')
                 
-                # Extração segura da quantidade
                 qtd_t = p.get('Qtd Produtos')
                 if qtd_t is None: 
                     qtd_t = p.get('QtdProdutos', '—')
@@ -216,7 +223,6 @@ def process_slack_command(response_url, texto_comando_slack):
                 txt = f"🔢 *Pedido:* {id_p} | 📦 *Total:* {qtd_t} itens | 🚚 *Status:* {p.get('StatusPedido')}\n{formatar_lista_produtos(p.get('Produtos'))}"
                 blocos.append({"type": "section", "text": {"type": "mrkdwn", "text": txt}})
                 
-                # Botão específico para ver os detalhes deste pedido
                 blocos.append({
                     "type": "actions", 
                     "elements": [{
@@ -238,25 +244,23 @@ def process_slack_command(response_url, texto_comando_slack):
             id_p = p.get('idPedido')
             status = p.get('StatusPedido') or '—'
             
-            # Extração segura da quantidade
             qtd_t = p.get('Qtd Produtos')
             if qtd_t is None: 
                 qtd_t = p.get('QtdProdutos', '—')
             
-            txt = f"🔢 *Pedido:* {id_p} | 📦 *Total:* {qtd_t} itens\n🏫 *Escola:* {p.get('Escola')}\n🚚 *Status:* {status}\n📅 *Data:* {p.get('DataPedido')}"
+            txt = f"🔢 *Número do pedido:* {id_p} | 📦 *Total:* {qtd_t} itens\n🏫 *Escola:* {p.get('Escola')}\n🚚 *Status:* {status}\n📅 *Data Pedido:* {p.get('DataPedido')}"
             
-            # Adiciona Transporte (se disponível e dependendo do status) - REMOVIDO CAMPO PREVISÃO
             if 'despachado' in status.lower() or 'trânsito' in status.lower():
                 transportadora = p.get('Transportadora')
                 if transportadora:
-                    txt += f"\n🚛 *Transporte:* {transportadora}"
+                    txt += f"\n🚛 *Transportadora:* {transportadora}"
             elif 'entrega realizada' in status.lower():
                 data_entrega_real = p.get('DataEntrega')
                 if data_entrega_real:
                     txt += f"\n✅ *Entrega Realizada:* {data_entrega_real}"
                 transportadora = p.get('Transportadora')
                 if transportadora:
-                    txt += f"\n🚛 *Transporte:* {transportadora}"
+                    txt += f"\n🚛 *Transportadora:* {transportadora}"
             
             if 'cancelado' in status.lower():
                 motivo = p.get('MotivoCancelamento') or 'Não informado'
@@ -267,7 +271,7 @@ def process_slack_command(response_url, texto_comando_slack):
                 "type": "actions", 
                 "elements": [{
                     "type": "button", 
-                    "text": {"type": "plain_text", "text": "📦 Ver Itens"}, 
+                    "text": {"type": "plain_text", "text": "📦 Ver Itens do Pedido", "emoji": True}, 
                     "value": f"{marca_api}|{ano_projeto_api}|{id_p}", 
                     "action_id": "ver_itens_pedido"
                 }]
