@@ -96,6 +96,26 @@ def consultar_api_com_retry(url, payload, max_tentativas=5, intervalo_inicial=1,
     logger.error(f"Falha ao consultar a API {url} após {max_tentativas} tentativas.")
     raise Exception(f"Falha ao consultar a API externa ({url}) após {max_tentativas} tentativas.")
 
+def obter_chave_escola(pedido):
+    """Gera a chave única da escola com base em um pedido."""
+    codigo_acesso = pedido.get('CodigoAcesso')
+    if codigo_acesso:
+        return str(codigo_acesso).strip()
+    nome_exato = str(pedido.get('Escola') or '').strip()
+    cep_escola = str(pedido.get('Cep') or '').strip()
+    return f"{nome_exato}||{cep_escola}"
+
+def formatar_lista_produtos(produtos_raw):
+    """Transforma a string bagunçada da API em uma lista com bullet points."""
+    if not produtos_raw:
+        return "• Nenhum item informado"
+    
+    # Troca o pipe (|) por vírgula para padronizar a quebra e fatiar a string
+    produtos_limpos = produtos_raw.replace('|', ',').split(',')
+    
+    # Cria os bullet points apenas para itens que não estão vazios
+    return "\n".join([f"• {item.strip()}" for item in produtos_limpos if item.strip()])
+
 # --- Lógica Principal (Executada em Thread) ---
 
 def process_slack_command(response_url, texto_comando_slack):
@@ -237,7 +257,6 @@ def process_slack_command(response_url, texto_comando_slack):
         # --- 4. Aplicar Filtros no Lado do Cliente ---
         pedidos_filtrados = pedidos_brutos
         
-        # Filtros blindados com "or ''" para evitar TypeError/AttributeError caso a API mande null
         if filtro_escola:
             pedidos_filtrados = [
                 p for p in pedidos_filtrados 
@@ -250,20 +269,20 @@ def process_slack_command(response_url, texto_comando_slack):
                 if str(p.get("CodigoAcesso") or "").strip() == filtro_chave or f"{str(p.get('Escola') or '').strip()}||{str(p.get('Cep') or '').strip()}" == filtro_chave
             ]
 
+        # Filtro reforçado: Remove tudo que tenha 'cancelado', 'devolução' ou 'entrega realizada' no texto
         if tipo_comando in ["escola_abertos", "busca_chave_abertos", "panorama"]:
-            status_fechados = ['entrega realizada', 'cancelado', 'devolução finalizada']
             pedidos_filtrados = [
                 p for p in pedidos_filtrados
-                if str(p.get("StatusPedido") or "").lower() not in status_fechados
+                if "cancelado" not in str(p.get("StatusPedido") or "").lower()
+                and "entrega realizada" not in str(p.get("StatusPedido") or "").lower()
+                and "devoluç" not in str(p.get("StatusPedido") or "").lower()
             ]
 
-        # Ordenação blindada
         pedidos_filtrados.sort(
             key=lambda p: int(p.get("idPedido") or 0) if str(p.get("idPedido") or 0).isdigit() else 0, 
             reverse=True
         )
 
-        # --- 5. Formatar e Enviar Resposta para o Slack ---
         if not pedidos_filtrados:
             msg_erro = "Nenhum pedido encontrado com os critérios especificados."
             if tipo_comando != "aging":
@@ -272,17 +291,31 @@ def process_slack_command(response_url, texto_comando_slack):
             return
 
         # =========================================================================
+        # MENU UNIVERSAL (Aparece em todas as telas)
+        # =========================================================================
+        pedido_base = pedidos_filtrados[0]
+        chave_para_botao = obter_chave_escola(pedido_base)
+        valor_botao_escola = f"{marca_api}|{ano_projeto_api}|{chave_para_botao}"
+        
+        bloco_menu_navegacao = {
+            "type": "actions",
+            "elements": [
+                {"type": "button", "text": {"type": "plain_text", "text": "Ver 5 últimos", "emoji": True}, "value": valor_botao_escola, "action_id": "ver_pedidos_chave_unica"},
+                {"type": "button", "text": {"type": "plain_text", "text": "Ver em aberto", "emoji": True}, "value": valor_botao_escola, "action_id": "ver_pedidos_abertos_chave_unica"},
+                {"type": "button", "text": {"type": "plain_text", "text": "Panorama de Produtos", "emoji": True}, "value": valor_botao_escola, "action_id": "ver_panorama_escola"}
+            ]
+        }
+
+        # =========================================================================
         # TELA EXCLUSIVA 1: DETALHE DOS ITENS (APENAS 1 PEDIDO)
         # =========================================================================
         if tipo_comando == "itens":
-            pedido_unico = pedidos_filtrados[0]
-            
-            id_pedido_itens = pedido_unico.get('idPedido') or '—'
-            escola = pedido_unico.get('Escola') or '—'
-            cidade = pedido_unico.get('Cidade') or '—'
-            uf = pedido_unico.get('Uf') or '—'
-            status = pedido_unico.get('StatusPedido') or '—'
-            data_pedido = pedido_unico.get('DataPedido') or '—'
+            id_pedido_itens = pedido_base.get('idPedido') or '—'
+            escola = pedido_base.get('Escola') or '—'
+            cidade = pedido_base.get('Cidade') or '—'
+            uf = pedido_base.get('Uf') or '—'
+            status = pedido_base.get('StatusPedido') or '—'
+            data_pedido = pedido_base.get('DataPedido') or '—'
 
             texto_detalhe_pedido = (
                 f"🔢 *Número do pedido:* {id_pedido_itens}\n"
@@ -291,14 +324,16 @@ def process_slack_command(response_url, texto_comando_slack):
                 f"📅 *Data Pedido:* {data_pedido}"
             )
 
-            produtos_raw = pedido_unico.get('Produtos') or 'Nenhum item encontrado.'
-            produtos_formatados = "\n".join([item.strip() for item in produtos_raw.split(',') if item.strip()])
+            # Usa a nova função para deixar a lista de produtos bonita
+            produtos_raw = pedido_base.get('Produtos')
+            produtos_formatados = formatar_lista_produtos(produtos_raw)
             
             blocos_de_resposta = [
                 {"type": "section", "text": {"type": "mrkdwn", "text": texto_detalhe_pedido}},
                 {"type": "section", "text": {"type": "mrkdwn", "text": f"📦 *Itens do Pedido:*"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": produtos_formatados}},
                 {"type": "divider"},
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"```{produtos_formatados}```"}}
+                bloco_menu_navegacao # <- Menu fixo injetado aqui
             ]
             
             send_slack_message(response_url, blocks=blocos_de_resposta, response_type="ephemeral")
@@ -308,17 +343,6 @@ def process_slack_command(response_url, texto_comando_slack):
         # TELA EXCLUSIVA 2: PANORAMA GERAL DA ESCOLA (PRODUTOS EM ABERTO)
         # =========================================================================
         if tipo_comando == "panorama":
-            pedido_base = pedidos_filtrados[0]
-            
-            # Gera a Chave Única para manter os botões de navegação no rodapé
-            codigo_acesso = pedido_base.get('CodigoAcesso')
-            if codigo_acesso:
-                chave_para_botao = str(codigo_acesso).strip()
-            else:
-                nome_exato = str(pedido_base.get('Escola') or '').strip()
-                cep_escola = str(pedido_base.get('Cep') or '').strip()
-                chave_para_botao = f"{nome_exato}||{cep_escola}"
-            
             escola_nome = pedido_base.get("Escola") or "Escola"
             
             blocos_de_resposta = [
@@ -330,16 +354,13 @@ def process_slack_command(response_url, texto_comando_slack):
             for p in pedidos_filtrados:
                 id_pedido = p.get('idPedido') or '—'
                 status = p.get('StatusPedido') or '—'
-                produtos_raw = p.get('Produtos') or 'Nenhum item informado'
                 
-                # Trata a lista de produtos
-                produtos_lista = [item.strip() for item in produtos_raw.split(',') if item.strip()]
-                produtos_formatados = "\n".join([f"• {item}" for item in produtos_lista])
+                # Usa a nova função para deixar a lista bonita
+                produtos_raw = p.get('Produtos')
+                produtos_formatados = formatar_lista_produtos(produtos_raw)
                 
-                # Monta o bloquinho de texto para este pedido específico
                 bloco_texto = f"🔢 *Pedido:* {id_pedido} | 🚚 *Status:* {status}\n{produtos_formatados}\n\n"
                 
-                # Evita estourar o limite de 3000 caracteres do Slack quebrando em vários blocos
                 if len(texto_panorama) + len(bloco_texto) > 2800:
                     blocos_de_resposta.append({"type": "section", "text": {"type": "mrkdwn", "text": texto_panorama}})
                     texto_panorama = bloco_texto
@@ -349,17 +370,8 @@ def process_slack_command(response_url, texto_comando_slack):
             if texto_panorama:
                 blocos_de_resposta.append({"type": "section", "text": {"type": "mrkdwn", "text": texto_panorama}})
             
-            # Adiciona os botões de navegação no rodapé
-            valor_botao_escola = f"{marca_api}|{ano_projeto_api}|{chave_para_botao}"
             blocos_de_resposta.append({"type": "divider"})
-            blocos_de_resposta.append({
-                "type": "actions",
-                "elements": [
-                    {"type": "button", "text": {"type": "plain_text", "text": "Ver 5 últimos", "emoji": True}, "value": valor_botao_escola, "action_id": "ver_pedidos_chave_unica"},
-                    {"type": "button", "text": {"type": "plain_text", "text": "Ver em aberto", "emoji": True}, "value": valor_botao_escola, "action_id": "ver_pedidos_abertos_chave_unica"},
-                    {"type": "button", "text": {"type": "plain_text", "text": "🔄 Atualizar Panorama", "emoji": True}, "value": valor_botao_escola, "action_id": "ver_panorama_escola"}
-                ]
-            })
+            blocos_de_resposta.append(bloco_menu_navegacao) # <- Menu fixo injetado aqui
             
             send_slack_message(response_url, blocks=blocos_de_resposta)
             return
@@ -368,22 +380,10 @@ def process_slack_command(response_url, texto_comando_slack):
         # TELA PADRÃO: LISTAGEM DOS 5 PEDIDOS
         # =========================================================================
         blocos_de_resposta = [{"type": "section", "text": {"type": "mrkdwn", "text": "*📦 Resultados encontrados:*"}}]
-        chave_para_botao = None
-        marca_para_botao = marca_api
-        ano_para_botao = ano_projeto_api
 
         for i, p in enumerate(pedidos_filtrados[:5]):
             status_pedido = str(p.get('StatusPedido') or '—')
             status_lower = status_pedido.lower()
-            
-            if i == 0:
-                codigo_acesso = p.get('CodigoAcesso')
-                if codigo_acesso:
-                    chave_para_botao = str(codigo_acesso).strip()
-                else:
-                    nome_exato = str(p.get('Escola') or '').strip()
-                    cep_escola = str(p.get('Cep') or '').strip()
-                    chave_para_botao = f"{nome_exato}||{cep_escola}"
 
             texto_do_pedido = ""
             texto_do_pedido += f"🔢 *Número do pedido:* {p.get('idPedido') or '—'}\n"
@@ -418,7 +418,6 @@ def process_slack_command(response_url, texto_comando_slack):
 
             blocos_de_resposta.append({"type": "section", "text": {"type": "mrkdwn", "text": texto_do_pedido}})
 
-            # AGORA O BOTÃO "VER ITENS" APARECE PARA TODOS OS PEDIDOS
             id_pedido_item = p.get('idPedido')
             if id_pedido_item:
                 valor_botao_item = f"{marca_api}|{ano_projeto_api}|{id_pedido_item}"
@@ -434,32 +433,7 @@ def process_slack_command(response_url, texto_comando_slack):
 
             blocos_de_resposta.append({"type": "divider"})
 
-        # INCLUI OS 3 BOTÕES NO RODAPÉ
-        if chave_para_botao:
-            valor_botao_escola = f"{marca_para_botao}|{ano_para_botao}|{chave_para_botao}"
-            blocos_de_resposta.append({
-                "type": "actions",
-                "elements": [
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "Ver 5 últimos", "emoji": True},
-                        "value": valor_botao_escola,
-                        "action_id": "ver_pedidos_chave_unica"
-                    },
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "Ver em aberto", "emoji": True},
-                        "value": valor_botao_escola,
-                        "action_id": "ver_pedidos_abertos_chave_unica"
-                    },
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "Panorama de Produtos", "emoji": True},
-                        "value": valor_botao_escola,
-                        "action_id": "ver_panorama_escola"
-                    }
-                ]
-            })
+        blocos_de_resposta.append(bloco_menu_navegacao) # <- Menu fixo injetado aqui
 
         if len(pedidos_filtrados) > 5:
             blocos_de_resposta.append({
@@ -580,7 +554,6 @@ def slack_interactive():
                     novo_comando_texto = f"busca_chave_abertos {marca} {ano} {chave_escola}"
                     mensagem_imediata = f"Buscando pedidos em aberto da escola..."
                     
-                # ROTA PARA O NOVO BOTÃO PANORAMA
                 elif action_id == "ver_panorama_escola" and action_value:
                     marca, ano, chave_escola = action_value.split("|", 2)
                     novo_comando_texto = f"panorama {marca} {ano} {chave_escola}"
