@@ -93,6 +93,7 @@ def process_slack_command(response_url, texto_comando_slack):
     logger.info(f"Processando: {texto_comando_slack}")
 
     def send_slack_message(response_url, text=None, blocks=None, response_type="in_channel"):
+        # Substitui a mensagem original apenas quando a resposta final está pronta
         payload = {
             "response_type": response_type,
             "replace_original": True
@@ -121,7 +122,7 @@ def process_slack_command(response_url, texto_comando_slack):
         pedidos_payload = {
             "token": token_autenticacao, "Tipo": "pedido", "Marca": marca_api,
             "AnoProjeto": ano_projeto_api, "DataPedidoInicial": "", "DataPedidoFinal": "",
-            "Despachavel": "S"  # MANTIDO: Garantindo que só olhemos itens físicos
+            "Despachavel": "S"  # REGRA DE OURO: SEMPRE TRAVADO EM 'S' PARA ITENS FÍSICOS
         }
 
         filtro_escola = None
@@ -156,13 +157,14 @@ def process_slack_command(response_url, texto_comando_slack):
         if filtro_chave:
             pedidos_filtrados = [p for p in pedidos_filtrados if str(p.get("CodigoAcesso") or "").strip() == filtro_chave or f"{str(p.get('Escola') or '').strip()}||{str(p.get('Cep') or '').strip()}" == filtro_chave]
         
+        # Filtros baseados puramente no STATUS, garantindo que o Despachavel S já trouxe apenas físicos
         if tipo_comando in ["escola_abertos", "busca_chave_abertos", "panorama"]:
-            pedidos_filtrados = [p for p in pedidos_filtrados if all(x not in str(p.get("StatusPedido") or "").lower() for x in ["cancelado", "entrega realizada", "devoluç"])]
+            pedidos_filtrados = [p for p in pedidos_filtrados if all(x not in str(p.get("StatusPedido") or "").lower() for x in ["cancelado", "entrega", "devoluç", "exclui", "excluído"])]
         
         elif tipo_comando == "busca_chave_finalizados":
             pedidos_filtrados = [
                 p for p in pedidos_filtrados 
-                if any(x in str(p.get("StatusPedido") or "").lower() for x in ["entrega realizada", "cancelado"]) 
+                if any(x in str(p.get("StatusPedido") or "").lower() for x in ["entrega", "cancelado", "exclui", "excluído"]) 
                 and "devoluç" not in str(p.get("StatusPedido") or "").lower()
             ]
 
@@ -172,9 +174,13 @@ def process_slack_command(response_url, texto_comando_slack):
         # CORREÇÃO DA RUA SEM SAÍDA: O bot não vai mais sumir com o menu!
         # ---------------------------------------------------------------------
         if not pedidos_filtrados:
-            blocos_vazios = [{"type": "section", "text": {"type": "mrkdwn", "text": "📭 *Nenhum pedido encontrado para esta visualização.*"}}]
+            msg_vazia = "📭 *Nenhum pedido encontrado para esta visualização.*"
+            if tipo_comando == "busca_chave_finalizados":
+                msg_vazia = "📭 *Nenhum pedido finalizado ou cancelado encontrado para esta escola no ano.*"
+
+            blocos_vazios = [{"type": "section", "text": {"type": "mrkdwn", "text": msg_vazia}}]
             
-            # Se já estivermos navegando por uma escola, recriamos os botões
+            # Se já estivermos navegando por uma escola, recriamos os botões para não travar o usuário
             if filtro_chave:
                 val_nav_vazio = f"{marca_api}:::{ano_projeto_api}:::{filtro_chave}"
                 menu_botoes_vazio = [
@@ -254,10 +260,10 @@ def process_slack_command(response_url, texto_comando_slack):
                 
             elif tipo_comando == "busca_chave_finalizados":
                 txt = f"🔢 *{id_p}* | 📦 {obter_qtd_total(p)} itens | 🚚 {status}"
-                if 'entrega realizada' in status_lower:
+                if 'entrega' in status_lower:
                     dt_entrega = p.get('DataEntrega')
                     if dt_entrega: txt += f"\n✅ *Entregue em:* {dt_entrega}"
-                elif 'cancelado' in status_lower:
+                elif 'cancelado' in status_lower or 'exclu' in status_lower:
                     motivo = p.get('MotivoCancelamento') or 'Não informado'
                     txt += f"\n🚫 *Motivo:* {motivo}"
                     
@@ -265,10 +271,10 @@ def process_slack_command(response_url, texto_comando_slack):
                 txt = f"🔢 *Número do pedido:* {id_p} | 📦 *Total:* {obter_qtd_total(p)} itens\n🏫 *Escola:* {p.get('Escola')}\n🚚 *Status:* {status}\n📅 *Data Pedido:* {p.get('DataPedido')}"
                 if 'despachado' in status_lower or 'trânsito' in status_lower:
                     txt += f"\n🚛 *Transportadora:* {p.get('Transportadora') or '—'}"
-                elif 'entrega realizada' in status_lower:
+                elif 'entrega' in status_lower:
                     dt_entrega = p.get('DataEntrega')
                     if dt_entrega: txt += f"\n✅ *Entrega Realizada:* {dt_entrega}"
-                elif 'cancelado' in status_lower:
+                elif 'cancelado' in status_lower or 'exclu' in status_lower:
                     motivo = p.get('MotivoCancelamento') or 'Não informado'
                     txt += f"\n🚫 *Motivo Cancelamento:* {motivo}"
 
