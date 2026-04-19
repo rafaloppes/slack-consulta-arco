@@ -142,7 +142,7 @@ def process_slack_command(response_url, texto_comando_slack):
         elif tipo_comando in ["escola", "escola_abertos"]:
             filtro_escola = " ".join(partes[3:] if not partes[-1].isdigit() else partes[3:-1]).strip().lower()
             pedidos_payload["DataPedidoInicial"], pedidos_payload["DataPedidoFinal"] = get_year_range(ano_projeto_api)
-        elif tipo_comando in ["busca_chave", "busca_chave_abertos", "panorama"]:
+        elif tipo_comando in ["busca_chave", "busca_chave_abertos", "busca_chave_finalizados", "panorama"]:
             filtro_chave = " ".join(partes[3:] if not partes[-1].isdigit() else partes[3:-1]).strip()
             pedidos_payload["DataPedidoInicial"], pedidos_payload["DataPedidoFinal"] = get_year_range(ano_projeto_api)
 
@@ -159,25 +159,34 @@ def process_slack_command(response_url, texto_comando_slack):
         if filtro_chave:
             pedidos_filtrados = [p for p in pedidos_filtrados if str(p.get("CodigoAcesso") or "").strip() == filtro_chave or f"{str(p.get('Escola') or '').strip()}||{str(p.get('Cep') or '').strip()}" == filtro_chave]
         
-        # Filtro de Abertos/Panorama: Remove Cancelados, Entregues e Devoluções
+        # Filtros de Status (Abertos vs Finalizados)
         if tipo_comando in ["escola_abertos", "busca_chave_abertos", "panorama"]:
-            pedidos_filtrados = [p for p in pedidos_filtrados if all(x not in str(p.get("StatusPedido") or "").lower() for x in ["cancelado", "entrega realizada", "devoluç"])]
+            # Exclui tudo que foi finalizado ou devolvido
+            pedidos_filtrados = [p for p in pedidos_filtrados if all(x not in str(p.get("StatusPedido") or "").lower() for x in ["cancelado", "entrega", "devoluç", "exclui", "excluído"])]
+        
+        elif tipo_comando == "busca_chave_finalizados":
+            # Inclui apenas entregues, cancelados ou excluídos (e barra expressamente devoluções)
+            pedidos_filtrados = [
+                p for p in pedidos_filtrados 
+                if any(x in str(p.get("StatusPedido") or "").lower() for x in ["entrega", "cancelado", "exclui", "excluído"]) 
+                and "devoluç" not in str(p.get("StatusPedido") or "").lower()
+            ]
 
         pedidos_filtrados.sort(key=lambda p: int(p.get("idPedido") or 0) if str(p.get("idPedido") or 0).isdigit() else 0, reverse=True)
 
         if not pedidos_filtrados:
-            send_slack_message(response_url, text="Nenhum pedido encontrado.")
+            send_slack_message(response_url, text="Nenhum pedido encontrado para os critérios selecionados.")
             return
 
-        # Menu e Chave de Navegação
+        # Menu e Chave de Navegação Atualizados
         pedido_ref = pedidos_filtrados[0]
         chave_unica = obter_chave_escola(pedido_ref)
         val_nav = f"{marca_api}|{ano_projeto_api}|{chave_unica}"
         
         menu_botoes = [
-            {"type": "button", "text": {"type": "plain_text", "text": "Ver 5 últimos"}, "value": val_nav, "action_id": "ver_pedidos_chave_unica"},
-            {"type": "button", "text": {"type": "plain_text", "text": "Ver em aberto"}, "value": val_nav, "action_id": "ver_pedidos_abertos_chave_unica"},
-            {"type": "button", "text": {"type": "plain_text", "text": "Panorama de Produtos"}, "value": val_nav, "action_id": "ver_panorama_escola"}
+            {"type": "button", "text": {"type": "plain_text", "text": "🏁 Finalizados / Cancelados"}, "value": val_nav, "action_id": "ver_pedidos_finalizados_chave_unica"},
+            {"type": "button", "text": {"type": "plain_text", "text": "⏳ Ver em aberto"}, "value": val_nav, "action_id": "ver_pedidos_abertos_chave_unica"},
+            {"type": "button", "text": {"type": "plain_text", "text": "📊 Panorama de Produtos"}, "value": val_nav, "action_id": "ver_panorama_escola"}
         ]
 
         # 5. Construção das Telas
@@ -209,16 +218,19 @@ def process_slack_command(response_url, texto_comando_slack):
             return
 
         # TELA 3: LISTAGEM COM RESUMO (Dashboard) E PAGINAÇÃO
-        # Se for "Ver em aberto", gera o resumo de status
         resumo_status = ""
         if tipo_comando in ["escola_abertos", "busca_chave_abertos"]:
             counts = {}
             for p in pedidos_filtrados:
                 s = p.get("StatusPedido") or "Desconhecido"
                 counts[s] = counts.get(s, 0) + 1
-            resumo_status = f"📊 *Resumo de Pedidos em Aberto (Total: {len(pedidos_filtrados)})*\n"
+            # Resumo atualizado incluindo a escola
+            resumo_status = f"📊 *Resumo de Pedidos em Aberto (Total: {len(pedidos_filtrados)})*\n🏫 *{pedido_ref.get('Escola')}*\n"
             for s, c in counts.items(): resumo_status += f"• *{c}* - `{s}`\n"
             resumo_status += "---"
+
+        elif tipo_comando == "busca_chave_finalizados":
+            resumo_status = f"🏁 *Histórico de Pedidos Finalizados/Cancelados (Total: {len(pedidos_filtrados)})*\n🏫 *{pedido_ref.get('Escola')}*\n---"
 
         blocos = []
         if resumo_status: blocos.append({"type": "section", "text": {"type": "mrkdwn", "text": resumo_status}})
@@ -229,15 +241,34 @@ def process_slack_command(response_url, texto_comando_slack):
         for p in pedidos_pagina:
             id_p = p.get('idPedido')
             status = p.get('StatusPedido') or '—'
-            expedicao = p.get('DataExpedicao')
-            txt = f"🔢 *{id_p}* | 📦 {obter_qtd_total(p)} itens | 🚚 {status}"
-            if expedicao: txt += f"\n📤 *Expedido em:* {expedicao}"
+            status_lower = status.lower()
             
-            # Adiciona informações extras se não for visão resumida
-            if tipo_comando not in ["escola_abertos", "busca_chave_abertos"]:
+            # Formatação baseada na visão selecionada
+            if tipo_comando in ["escola_abertos", "busca_chave_abertos"]:
+                expedicao = p.get('DataExpedicao')
+                txt = f"🔢 *{id_p}* | 📦 {obter_qtd_total(p)} itens | 🚚 {status}"
+                if expedicao: txt += f"\n📤 *Expedido em:* {expedicao}"
+                
+            elif tipo_comando == "busca_chave_finalizados":
+                txt = f"🔢 *{id_p}* | 📦 {obter_qtd_total(p)} itens | 🚚 {status}"
+                if 'entrega' in status_lower:
+                    dt_entrega = p.get('DataEntrega')
+                    if dt_entrega: txt += f"\n✅ *Entregue em:* {dt_entrega}"
+                elif 'cancelado' in status_lower or 'exclu' in status_lower:
+                    motivo = p.get('MotivoCancelamento') or 'Não informado'
+                    txt += f"\n🚫 *Motivo:* {motivo}"
+                    
+            else:
+                # Busca Padrão (ex: primeira busca de escola)
                 txt = f"🔢 *Número do pedido:* {id_p} | 📦 *Total:* {obter_qtd_total(p)} itens\n🏫 *Escola:* {p.get('Escola')}\n🚚 *Status:* {status}\n📅 *Data Pedido:* {p.get('DataPedido')}"
-                if 'despachado' in status.lower() or 'trânsito' in status.lower():
+                if 'despachado' in status_lower or 'trânsito' in status_lower:
                     txt += f"\n🚛 *Transportadora:* {p.get('Transportadora') or '—'}"
+                elif 'entrega' in status_lower:
+                    dt_entrega = p.get('DataEntrega')
+                    if dt_entrega: txt += f"\n✅ *Entrega Realizada:* {dt_entrega}"
+                elif 'cancelado' in status_lower or 'exclu' in status_lower:
+                    motivo = p.get('MotivoCancelamento') or 'Não informado'
+                    txt += f"\n🚫 *Motivo Cancelamento:* {motivo}"
 
             blocos.append({"type": "section", "text": {"type": "mrkdwn", "text": txt}})
             blocos.append({"type": "actions", "elements": [{"type": "button", "text": {"type": "plain_text", "text": f"🔎 Ver Detalhes do {id_p}"}, "value": f"{marca_api}|{ano_projeto_api}|{id_p}", "action_id": "ver_itens_pedido"}]})
@@ -248,11 +279,16 @@ def process_slack_command(response_url, texto_comando_slack):
             prox_offset = offset + 5
             total_restante = len(pedidos_filtrados) - prox_offset
             mostrar = 5 if total_restante > 5 else total_restante
+            
+            action_id_paginacao = "ver_pedidos_chave_unica" # Padrão
+            if "abertos" in tipo_comando: action_id_paginacao = "ver_pedidos_abertos_chave_unica"
+            elif "finalizados" in tipo_comando: action_id_paginacao = "ver_pedidos_finalizados_chave_unica"
+            
             btn_paginacao = {
                 "type": "button", 
                 "text": {"type": "plain_text", "text": f"➕ Ver próximos {mostrar} (Total: {len(pedidos_filtrados)})"}, 
                 "value": f"{marca_api}|{ano_projeto_api}|{chave_unica}|{prox_offset}", 
-                "action_id": "ver_pedidos_abertos_chave_unica" if "abertos" in tipo_comando else "ver_pedidos_chave_unica"
+                "action_id": action_id_paginacao
             }
             menu_botoes.append(btn_paginacao)
 
@@ -260,7 +296,7 @@ def process_slack_command(response_url, texto_comando_slack):
         
         # Contexto de rodapé
         fim_idx = offset + 5 if len(pedidos_filtrados) > offset + 5 else len(pedidos_filtrados)
-        blocos.append({"type": "context", "elements": [{"type": "mrkdwn", "text": f"_Mostrando {offset+1} a {fim_idx} de {len(pedidos_filtrados)} pedidos encontrados._"}]})
+        blocos.append({"type": "context", "elements": [{"type": "mrkdwn", "text": f"_Mostrando {offset+1} a {fim_idx} de {len(pedidos_filtrados)} pedidos._"}]})
         
         send_slack_message(response_url, blocks=blocos)
 
@@ -305,6 +341,7 @@ def slack_interactive():
     cmds = {
         "ver_pedidos_chave_unica": "busca_chave",
         "ver_pedidos_abertos_chave_unica": "busca_chave_abertos",
+        "ver_pedidos_finalizados_chave_unica": "busca_chave_finalizados",
         "ver_panorama_escola": "panorama",
         "ver_itens_pedido": "itens"
     }
