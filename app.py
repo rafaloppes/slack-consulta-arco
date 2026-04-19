@@ -77,10 +77,6 @@ def consultar_api_com_retry(url, payload, max_tentativas=5, intervalo_inicial=1,
             res = requests.post(url, json=payload, headers=headers, timeout=15)
             res.raise_for_status()
             logger.info(f"Tentativa {tentativa}: Sucesso ao chamar {url}. Status: {res.status_code}")
-            try:
-                logger.info(f"Resposta API ({url}): {res.text}")
-            except Exception as log_e:
-                logger.warning(f"Não foi possível logar o corpo da resposta: {log_e}")
             return res.json()
         except requests.exceptions.Timeout:
             logger.warning(f"Tentativa {tentativa}/{max_tentativas} falhou: Timeout ao chamar {url}")
@@ -88,16 +84,14 @@ def consultar_api_com_retry(url, payload, max_tentativas=5, intervalo_inicial=1,
             logger.warning(f"Tentativa {tentativa}/{max_tentativas} falhou: Erro HTTP {e.response.status_code} ao chamar {url}: {e}")
             if e.response.status_code == 429:
                 logger.warning("Recebemos um erro 429 (Too Many Requests).")
-            try:
-                logger.warning(f"Corpo da resposta de erro ({url}): {e.response.text}")
-            except Exception as log_e:
-                logger.warning(f"Não foi possível logar o corpo da resposta de erro: {log_e}")
         except requests.exceptions.RequestException as e:
             logger.warning(f"Tentativa {tentativa}/{max_tentativas} falhou: Erro de requisição ao chamar {url}: {e}")
+        
         if tentativa < max_tentativas:
             espera = min(intervalo_inicial * (2 ** (tentativa - 1)) + random.random(), intervalo_maximo)
             logger.info(f"Tentativa {tentativa}: Falha. Próxima tentativa em {espera:.2f} segundos.")
             sleep(espera)
+            
     logger.error(f"Falha ao consultar a API {url} após {max_tentativas} tentativas.")
     raise Exception(f"Falha ao consultar a API externa ({url}) após {max_tentativas} tentativas.")
 
@@ -149,17 +143,12 @@ def process_slack_command(response_url, texto_comando_slack):
 
             if status_integracao != "SUCESSO" or not token_autenticacao:
                 logger.error(f"Falha na resposta da API ARCO /gerartoken. Status: {status_integracao}, Token Presente: {bool(token_autenticacao)}, Mensagem API: {msg_api}")
-                if status_integracao == "SUCESSO" and not token_autenticacao:
-                    send_slack_message(response_url, text="Erro interno: A API de token retornou sucesso, mas não forneceu um token válido.")
-                elif status_integracao is None:
-                    send_slack_message(response_url, text=f"Erro na resposta da API de token: Estrutura de resposta inesperada ou 'statusIntegracao' ausente. Mensagem da API: {msg_api}")
-                else:
-                    send_slack_message(response_url, text=f"Erro ao gerar token da API ARCO. Status API: {status_integracao}. Detalhes: {msg_api}")
+                send_slack_message(response_url, text=f"Erro ao gerar token da API ARCO. Detalhes: {msg_api}")
                 return
             logger.info("Token ARCO gerado com sucesso.")
         except Exception as e:
              logger.error(f"Falha crítica ao gerar token da API ARCO (exceção): {e}", exc_info=True)
-             send_slack_message(response_url, text=f"Erro ao comunicar com a API ARCO para gerar token (exceção): {e}")
+             send_slack_message(response_url, text=f"Erro ao comunicar com a API ARCO para gerar token: {e}")
              return
 
         # --- 2. Construir Payload para Consultar Pedidos ---
@@ -170,6 +159,7 @@ def process_slack_command(response_url, texto_comando_slack):
         }
 
         filtro_escola = None
+        filtro_chave = None
         hoje = datetime.datetime.now()
 
         def set_date_range_for_year(ano):
@@ -187,7 +177,7 @@ def process_slack_command(response_url, texto_comando_slack):
                 pedidos_payload["DataPedidoInicial"] = inicio_data.strftime("%Y-%m-%d 00:00:00")
                 pedidos_payload["DataPedidoFinal"] = hoje.strftime("%Y-%m-%d 23:59:59")
 
-            elif tipo_comando == "pedido" or tipo_comando == "itens": # 'itens' usa a mesma lógica de busca
+            elif tipo_comando == "pedido" or tipo_comando == "itens":
                 if len(partes) < 4:
                     send_slack_message(response_url, text=f"Comando '{tipo_comando}' requer marca, ano e número do pedido.")
                     return
@@ -198,7 +188,6 @@ def process_slack_command(response_url, texto_comando_slack):
                     send_slack_message(response_url, text=f"Erro: O número do pedido '{filtro_numero_pedido_str}' não é um número válido.")
                     return
                 pedidos_payload["DataPedidoInicial"], pedidos_payload["DataPedidoFinal"] = set_date_range_for_year(ano_projeto_api)
-                logger.info(f"Buscando pedido {filtro_numero_pedido_str} no ano {ano_projeto_api} via API.")
 
             elif tipo_comando == "expedicao":
                 if len(partes) < 5:
@@ -206,18 +195,24 @@ def process_slack_command(response_url, texto_comando_slack):
                     return
                 data_inicial_str = partes[3].strip()
                 data_final_str = partes[4].strip()
-                datetime.datetime.strptime(data_inicial_str, "%Y-%m-%d") # Validação
-                datetime.datetime.strptime(data_final_str, "%Y-%m-%d") # Validação
+                datetime.datetime.strptime(data_inicial_str, "%Y-%m-%d") 
+                datetime.datetime.strptime(data_final_str, "%Y-%m-%d") 
                 pedidos_payload["DataPedidoInicial"] = f"{data_inicial_str} 00:00:00"
                 pedidos_payload["DataPedidoFinal"] = f"{data_final_str} 23:59:59"
 
-            elif tipo_comando == "escola" or tipo_comando == "escola_abertos": # 'escola_abertos' usa a mesma lógica de busca
+            elif tipo_comando == "escola" or tipo_comando == "escola_abertos":
                 if len(partes) < 4:
                     send_slack_message(response_url, text="Comando 'escola' requer marca, ano e o nome (ou parte do nome) da escola.")
                     return
                 filtro_escola = " ".join(partes[3:]).strip().lower()
                 pedidos_payload["DataPedidoInicial"], pedidos_payload["DataPedidoFinal"] = set_date_range_for_year(ano_projeto_api)
-                logger.info(f"Buscando pedidos para o ano de {ano_projeto_api} para filtrar por escola '{filtro_escola}'")
+
+            # Novo bloco para lidar com a busca exata pelos botões interativos
+            elif tipo_comando in ["busca_chave", "busca_chave_abertos"]:
+                if len(partes) < 4:
+                    return
+                filtro_chave = " ".join(partes[3:]).strip()
+                pedidos_payload["DataPedidoInicial"], pedidos_payload["DataPedidoFinal"] = set_date_range_for_year(ano_projeto_api)
 
             else:
                 send_slack_message(response_url, text=f"Tipo de consulta '{tipo_comando}' não reconhecido.")
@@ -231,11 +226,9 @@ def process_slack_command(response_url, texto_comando_slack):
         try:
             pedidos_brutos = consultar_api_com_retry(URL_PEDIDOS, pedidos_payload)
             if not isinstance(pedidos_brutos, list):
-                logger.error(f"Resposta inesperada da API /pedidos. Esperava lista, recebeu: {pedidos_brutos}")
-                msg_api_err = pedidos_brutos.get("retorno", {}).get("mensagens", {}).get("mensagem", "Resposta inesperada ou vazia da API de pedidos.")
+                msg_api_err = pedidos_brutos.get("retorno", {}).get("mensagens", {}).get("mensagem", "Resposta inesperada da API.")
                 send_slack_message(response_url, text=f"Erro na resposta da API de pedidos: {msg_api_err}")
                 return
-            logger.info(f"Recebidos {len(pedidos_brutos)} pedidos brutos da API.")
         except Exception as e:
             logger.error(f"Falha crítica ao consultar API de Pedidos: {e}", exc_info=True)
             send_slack_message(response_url, text=f"Erro ao comunicar com a API ARCO para consultar pedidos: {e}")
@@ -244,17 +237,32 @@ def process_slack_command(response_url, texto_comando_slack):
         # --- 4. Aplicar Filtros no Lado do Cliente ---
         pedidos_filtrados = pedidos_brutos
         
+        # Filtro de texto normal (se o usuário digitar /comando escola)
         if filtro_escola:
             pedidos_filtrados = [p for p in pedidos_filtrados if filtro_escola in p.get("Escola", "").lower()]
-            logger.info(f"Após filtrar por escola '{filtro_escola}': {len(pedidos_filtrados)} pedidos encontrados.")
 
-        if tipo_comando == "escola_abertos":
+        # Filtro exato com a Chave Única (Acionado pelos botões)
+        if tipo_comando in ["busca_chave", "busca_chave_abertos"] and filtro_chave:
+            pedidos_filtrados = [
+                p for p in pedidos_filtrados
+                if str(p.get("CodigoAcesso", "")).strip() == filtro_chave or f"{p.get('Escola', '').strip()}||{p.get('Cep', '').strip()}" == filtro_chave
+            ]
+
+        # Lógica para remover pedidos finalizados
+        if tipo_comando in ["escola_abertos", "busca_chave_abertos"]:
             status_fechados = ['entrega realizada', 'cancelado', 'devolução finalizada']
             pedidos_filtrados = [
                 p for p in pedidos_filtrados
                 if p.get("StatusPedido", "").lower() not in status_fechados
             ]
-            logger.info(f"Após filtrar por 'pedidos abertos': {len(pedidos_filtrados)} pedidos encontrados.")
+
+        # =====================================================================
+        # CORREÇÃO VITAL: Ordenação para garantir que os itens no topo são os MAIS RECENTES
+        # =====================================================================
+        pedidos_filtrados.sort(
+            key=lambda p: int(p.get("idPedido", 0)) if str(p.get("idPedido", 0)).isdigit() else 0, 
+            reverse=True
+        )
 
         # --- 5. Formatar e Enviar Resposta para o Slack ---
         if not pedidos_filtrados:
@@ -264,11 +272,9 @@ def process_slack_command(response_url, texto_comando_slack):
             send_slack_message(response_url, text=msg_erro)
             return
 
-        # --- MUDANÇA: Lógica de 'itens' agora inclui contexto ---
         if tipo_comando == "itens":
             pedido_unico = pedidos_filtrados[0]
             
-            # 1. Extrair os dados do pedido
             id_pedido_itens = pedido_unico.get('idPedido', '—')
             escola = pedido_unico.get('Escola', '—')
             cidade = pedido_unico.get('Cidade', '—')
@@ -276,7 +282,6 @@ def process_slack_command(response_url, texto_comando_slack):
             status = pedido_unico.get('StatusPedido', '—')
             data_pedido = pedido_unico.get('DataPedido', '—')
 
-            # 2. Montar a string de detalhes do pedido
             texto_detalhe_pedido = (
                 f"🔢 *Número do pedido:* {id_pedido_itens}\n"
                 f"🏫 *Escola:* {escola} - {cidade}/{uf}\n"
@@ -284,45 +289,22 @@ def process_slack_command(response_url, texto_comando_slack):
                 f"📅 *Data Pedido:* {data_pedido}"
             )
 
-            # 3. Formatar os produtos
             produtos_raw = pedido_unico.get('Produtos', 'Nenhum item encontrado.')
             produtos_formatados = "\n".join([item.strip() for item in produtos_raw.split(',') if item.strip()])
             
-            # 4. Construir o bloco de resposta completo
             blocos_de_resposta = [
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": texto_detalhe_pedido # <-- Detalhes do pedido
-                    }
-                },
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"📦 *Itens do Pedido:*" # <-- Título dos itens (sem ID, já está acima)
-                    }
-                },
+                {"type": "section", "text": {"type": "mrkdwn", "text": texto_detalhe_pedido}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"📦 *Itens do Pedido:*"}},
                 {"type": "divider"},
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"```{produtos_formatados}```" # <-- Lista de itens
-                    }
-                }
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"```{produtos_formatados}```"}}
             ]
             
-            # Envia a resposta de itens (visível apenas para o usuário)
             send_slack_message(response_url, blocks=blocos_de_resposta, response_type="ephemeral")
-            logger.info("Resposta de itens com contexto enviada.")
-            return # Interrompe o processamento aqui
-        # --- FIM DA MUDANÇA ---
+            return
 
         # --- Formatação Padrão (para todos os outros comandos) ---
         blocos_de_resposta = [{"type": "section", "text": {"type": "mrkdwn", "text": "*📦 Resultados encontrados:*"}}]
-        escola_para_botao = None
+        chave_para_botao = None
         marca_para_botao = marca_api
         ano_para_botao = ano_projeto_api
 
@@ -330,9 +312,15 @@ def process_slack_command(response_url, texto_comando_slack):
             status_pedido = p.get('StatusPedido', '—')
             status_lower = status_pedido.lower()
             
-            if i == 0 and (tipo_comando == "pedido" or tipo_comando == "itens"):
-                escola_raw = p.get('Escola', '—')
-                escola_para_botao = escola_raw.split(' - ')[0].strip() if ' - ' in escola_raw else escola_raw.strip()
+            # Gera a Chave Única com base no primeiro pedido encontrado
+            if i == 0:
+                codigo_acesso = p.get('CodigoAcesso')
+                if codigo_acesso:
+                    chave_para_botao = str(codigo_acesso).strip()
+                else:
+                    nome_exato = p.get('Escola', '').strip()
+                    cep_escola = p.get('Cep', '').strip()
+                    chave_para_botao = f"{nome_exato}||{cep_escola}"
 
             texto_do_pedido = ""
             texto_do_pedido += f"🔢 *Número do pedido:* {p.get('idPedido', '—')}\n"
@@ -383,8 +371,9 @@ def process_slack_command(response_url, texto_comando_slack):
 
             blocos_de_resposta.append({"type": "divider"})
 
-        if (tipo_comando == "pedido") and escola_para_botao and escola_para_botao != '—':
-            valor_botao_escola = f"{marca_para_botao}|{ano_para_botao}|{escola_para_botao}"
+        # Insere os botões de controle ao final caso tenhamos uma chave válida
+        if chave_para_botao and tipo_comando not in ["busca_chave", "busca_chave_abertos"]:
+            valor_botao_escola = f"{marca_para_botao}|{ano_para_botao}|{chave_para_botao}"
             blocos_de_resposta.append({
                 "type": "actions",
                 "elements": [
@@ -392,13 +381,13 @@ def process_slack_command(response_url, texto_comando_slack):
                         "type": "button",
                         "text": {"type": "plain_text", "text": "Ver 5 últimos (Escola)", "emoji": True},
                         "value": valor_botao_escola,
-                        "action_id": "ver_pedidos_escola"
+                        "action_id": "ver_pedidos_chave_unica"
                     },
                     {
                         "type": "button",
                         "text": {"type": "plain_text", "text": "Ver em aberto (Escola)", "emoji": True},
                         "value": valor_botao_escola,
-                        "action_id": "ver_pedidos_abertos_escola"
+                        "action_id": "ver_pedidos_abertos_chave_unica"
                     }
                 ]
             })
@@ -410,7 +399,6 @@ def process_slack_command(response_url, texto_comando_slack):
             })
 
         send_slack_message(response_url, blocks=blocos_de_resposta)
-        logger.info("Resposta final em blocos enviada para o Slack.")
 
     except Exception as e:
         logger.error(f"Erro inesperado no processamento do comando Slack (thread): {str(e)}", exc_info=True)
@@ -429,7 +417,6 @@ def slack_command():
         text = form.get("text", [""])[0].strip()
         response_url = form.get("response_url", [""])[0].strip()
         if not response_url:
-            logger.error("response_url ausente na requisição do Slack.")
             return "Erro interno: response_url ausente.", 500
     except Exception as e:
         logger.error(f"Erro ao parsear requisição do Slack (rota): {e}", exc_info=True)
@@ -447,13 +434,12 @@ def slack_command():
     try:
         thread = threading.Thread(target=process_slack_command, args=(response_url, text))
         thread.start()
-        logger.info("Thread de processamento iniciada.")
     except Exception as e:
         logger.error(f"Falha ao iniciar thread de processamento: {e}", exc_info=True)
         try:
             requests.post(response_url, json={"text": "Erro interno: Não foi possível iniciar o processamento do comando."}, timeout=5)
         except requests.exceptions.RequestException:
-            logger.error("Falha ao enviar mensagem de erro para response_url após falha da thread.")
+            pass
         return "Erro interno do servidor ao iniciar processo.", 500
 
     return jsonify({"response_type": "ephemeral", "text": "🛠️ Sua consulta está sendo processada, aguarde..."}), 200
@@ -465,21 +451,16 @@ def slack_command():
 def slack_interactive():
     """Recebe interações do Slack (cliques em botões)."""
     if not verify_slack_signature(request):
-        logger.warning("Assinatura inválida na rota interativa.")
         return "Assinatura inválida.", 401
 
     try:
         payload_str = request.form.get("payload")
         if not payload_str:
-            logger.error("Payload interativo ausente.")
             return "Payload ausente.", 400
         
         payload = json.loads(payload_str)
-        logger.info(f"Payload interativo recebido: {payload.get('type')}")
-
         response_url = payload.get("response_url")
         if not response_url:
-            logger.error("response_url ausente no payload interativo.")
             return "Erro interno.", 500
 
         if payload.get("type") == "block_actions":
@@ -491,24 +472,25 @@ def slack_interactive():
             mensagem_imediata = None
             
             try:
-                # Roteamento das ações do botão
-                if action_id == "ver_pedidos_escola" and action_value:
-                    marca, ano, nome_escola = action_value.split("|", 2)
-                    novo_comando_texto = f"escola {marca} {ano} {nome_escola}"
-                    mensagem_imediata = f"Buscando os últimos 5 pedidos para a escola: *{nome_escola}*..."
+                # Novas rotas baseadas na Chave Única
+                if action_id == "ver_pedidos_chave_unica" and action_value:
+                    marca, ano, chave_escola = action_value.split("|", 2)
+                    novo_comando_texto = f"busca_chave {marca} {ano} {chave_escola}"
+                    mensagem_imediata = f"Buscando os últimos 5 pedidos da escola..."
 
-                elif action_id == "ver_pedidos_abertos_escola" and action_value:
-                    marca, ano, nome_escola = action_value.split("|", 2)
-                    novo_comando_texto = f"escola_abertos {marca} {ano} {nome_escola}"
-                    mensagem_imediata = f"Buscando pedidos em aberto para: *{nome_escola}*..."
+                elif action_id == "ver_pedidos_abertos_chave_unica" and action_value:
+                    marca, ano, chave_escola = action_value.split("|", 2)
+                    novo_comando_texto = f"busca_chave_abertos {marca} {ano} {chave_escola}"
+                    mensagem_imediata = f"Buscando pedidos em aberto da escola..."
 
+                # Mantida a rota de Itens
                 elif action_id == "ver_itens_pedido" and action_value:
                     marca, ano, id_pedido = action_value.split("|", 2)
                     novo_comando_texto = f"itens {marca} {ano} {id_pedido}"
                     mensagem_imediata = f"Buscando itens do pedido *{id_pedido}*..."
 
                 if novo_comando_texto and mensagem_imediata:
-                    logger.info(f"Ação '{action_id}' recebida. Comando: {novo_comando_texto}")
+                    logger.info(f"Ação '{action_id}' recebida. Comando interno: {novo_comando_texto}")
                     
                     requests.post(response_url, json={
                         "response_type": "ephemeral", 
@@ -517,7 +499,6 @@ def slack_interactive():
 
                     thread = threading.Thread(target=process_slack_command, args=(response_url, novo_comando_texto))
                     thread.start()
-                
                 else:
                     logger.warning(f"Ação não reconhecida ou valor ausente: {action_id}")
 
