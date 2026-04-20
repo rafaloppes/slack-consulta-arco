@@ -81,16 +81,13 @@ def process_command(response_url, text):
             requests.post(response_url, json={"text": "⚠️ Informe o número do pedido."})
             return
 
-        # Marcas que EXIGEM consulta na API para detalhar produtos
         marcas_api = ['nave', 'geekie']
-        
         pedido_resumo = {}
         log = obter_logistica(id_pedido)
 
-        # --- BIFURCAÇÃO DE LÓGICA ---
+        # --- LÓGICA DE BUSCA ---
         
         if marca_input in marcas_api:
-            # FLUXO NAVE/GEEKIE: Busca obrigatória na API
             tk_res = consultar_arco(URL_TOKEN, {"token": TOKEN_STATICO})
             token = tk_res.get("retorno", {}).get("token")
             p_arco_list = consultar_arco(URL_PEDIDOS, {"token": token, "Tipo": "pedido", "Marca": marca_input, "AnoProjeto": ano, "Pedido": int(id_pedido), "Despachavel": "S"})
@@ -102,6 +99,7 @@ def process_command(response_url, text):
             p = p_arco_list[0]
             pedido_resumo = {
                 "id": p.get('idPedido'),
+                "marca": marca_input.upper(),
                 "escola": p.get('Escola'),
                 "status": p.get('StatusPedido'),
                 "produtos": "\n".join([f"• {i.strip()}" for i in str(p.get('Produtos', '')).replace('|', ',').split(',') if i.strip()]),
@@ -109,23 +107,26 @@ def process_command(response_url, text):
                 "codigo_acesso": p.get('CodigoAcesso')
             }
         else:
-            # FLUXO OUTRAS MARCAS: Busca apenas na Planilha
             if not log or str(log.get('marca', '')).lower() != marca_input:
                 requests.post(response_url, json={"text": f"📭 Pedido {id_pedido} não localizado na Logística para a marca {marca_input.upper()}."})
                 return
             
-            status_simples = "✅ Entregue" if formatar_data_br(log.get('data_entrega')) else "🚚 Em trânsito"
+            status_simples = "Entregue" if formatar_data_br(log.get('data_entrega')) else "Em trânsito"
             pedido_resumo = {
                 "id": id_pedido,
+                "marca": str(log.get('marca', marca_input)).upper(),
                 "escola": log.get('cliente', 'Escola não identificada'),
                 "status": status_simples,
-                "produtos": "📦 _Itens de logística (Detalhamento não disponível para esta marca)_",
+                "produtos": "_Itens de logística (Detalhamento não disponível para esta marca)_",
                 "origem_api": False
             }
 
-        # --- MONTAGEM DO CARD (UNIFICADO) ---
+        # --- MONTAGEM DO CARD ---
         
-        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": f"🔢 *Pedido: {pedido_resumo['id']}* | 🏫 {pedido_resumo['escola']}\n🚚 *Status:* {pedido_resumo['status']}"}}]
+        # O cabeçalho agora inclui a MARCA de forma explícita
+        header_text = f"🔢 *Pedido: {pedido_resumo['id']}* | 🏷️ *Marca:* {pedido_resumo['marca']}\n🏫 {pedido_resumo['escola']}\n🚚 *Status:* {pedido_resumo['status']}"
+        
+        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": header_text}}]
 
         if log:
             hoje = date.today()
@@ -141,7 +142,6 @@ def process_command(response_url, text):
 
             if dt_ini_fmt: linhas_log.append(f"📅 *Previsão Inicial:* {dt_ini_fmt}")
 
-            # Lógica de Atraso (Só processa se não tiver data de entrega final)
             if dt_ini_obj and dt_ini_obj < hoje and not dt_ent_fmt:
                 if obs and obs not in ["-", ""]: linhas_log.append(f"⚠️ *Ocorrência:* {obs}")
                 
@@ -157,10 +157,8 @@ def process_command(response_url, text):
 
             blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*Dados de Entrega:*\n" + "\n".join(linhas_log)}})
 
-        # Bloco de Produtos
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"📦 *Produtos:*\n{pedido_resumo['produtos']}"}})
         
-        # Botões extras apenas para Nave/Geekie (que possuem suporte a isso na API)
         if pedido_resumo.get('origem_api'):
             val_nav = f"{marca_input}:::{ano}:::{pedido_resumo.get('codigo_acesso') or pedido_resumo['escola']}"
             blocks.append({"type": "actions", "elements": [
