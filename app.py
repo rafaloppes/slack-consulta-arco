@@ -14,7 +14,7 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- CONFIGURAÇÕES DE AMBIENTE ---
+# --- CONFIGURAÇÕES ---
 TOKEN_STATICO = os.getenv("ARCO_API_KEY")
 URL_TOKEN = os.getenv("ARCO_URL_TOKEN")
 URL_PEDIDOS = os.getenv("ARCO_URL_PEDIDOS")
@@ -52,16 +52,25 @@ def converter_para_objeto_data(data_str):
         except: return None
 
 def consultar_rastreio_correios(codigo):
+    """Consulta o status real nos Correios com maior tolerância de tempo"""
     if not codigo or len(codigo) < 8: return None
     try:
+        # Consulta via API Linketrack
         url = f"https://api.linketrack.com/track/json?user=teste&token=1abcd02192ee382fe05520fd1120cdc51efad2e8&codigo={codigo}"
-        res = requests.get(url, timeout=8)
+        # Aumentamos o timeout para 12 segundos pois o site dos Correios é lento
+        res = requests.get(url, timeout=12)
         if res.status_code == 200:
-            eventos = res.json().get('eventos', [])
+            dados = res.json()
+            eventos = dados.get('eventos', [])
             if eventos:
                 ultimo = eventos[0]
-                return f"{ultimo.get('status')} em {ultimo.get('data')} ({ultimo.get('hora')})"
-    except: return None
+                status = ultimo.get('status', 'Status não identificado')
+                data = ultimo.get('data', '')
+                hora = ultimo.get('hora', '')
+                return f"{status} em {data} às {hora}"
+    except Exception as e:
+        logger.error(f"Erro na API de Rastreio: {e}")
+        return "⚠️ Sistema de rastreio instável, tente o link acima."
     return None
 
 # --- COMUNICAÇÃO ---
@@ -71,8 +80,7 @@ def obter_logistica(id_pedido):
         url = f"{URL_LOGISTICA}?id={id_pedido}&token={TOKEN_LOGISTICA}"
         res = requests.get(url, timeout=15)
         if res.status_code == 200:
-            dados = res.json()
-            return dados if "erro" not in dados else None
+            return res.json() if "erro" not in res.json() else None
     except: return None
 
 def consultar_arco(url, payload):
@@ -91,46 +99,34 @@ def process_command(response_url, text):
         ano, idx = (int(partes[2]), 3) if len(partes) > 2 and partes[2].isdigit() and len(partes[2]) == 4 else (2026, 2)
         id_pedido = partes[idx] if len(partes) > idx else None
 
-        if not id_pedido:
-            requests.post(response_url, json={"text": "⚠️ Por favor, informe o número do pedido."})
-            return
-
         marcas_api = ['nave', 'geekie']
         pedido_resumo = {}
         log = obter_logistica(id_pedido)
 
+        # 1. BIFURCAÇÃO: API vs Planilha
         if marca_input in marcas_api:
             tk_res = consultar_arco(URL_TOKEN, {"token": TOKEN_STATICO})
             token = tk_res.get("retorno", {}).get("token")
             p_arco_list = consultar_arco(URL_PEDIDOS, {"token": token, "Tipo": "pedido", "Marca": marca_input, "AnoProjeto": ano, "Pedido": int(id_pedido), "Despachavel": "S"})
             
             if not p_arco_list:
-                requests.post(response_url, json={"text": f"📭 Pedido {id_pedido} não localizado na API para a marca {marca_input.upper()}."})
+                requests.post(response_url, json={"text": f"📭 Pedido {id_pedido} não localizado."})
                 return
             
             p = p_arco_list[0]
             pedido_resumo = {
-                "id": p.get('idPedido'),
-                "marca": marca_input.upper(),
-                "escola": p.get('Escola'),
-                "status": p.get('StatusPedido'),
+                "id": p.get('idPedido'), "marca": marca_input.upper(), "escola": p.get('Escola'), "status": p.get('StatusPedido'),
                 "produtos": "\n".join([f"• {i.strip()}" for i in str(p.get('Produtos', '')).replace('|', ',').split(',') if i.strip()]),
-                "origem_api": True,
-                "codigo_acesso": p.get('CodigoAcesso')
+                "origem_api": True, "codigo_acesso": p.get('CodigoAcesso')
             }
         else:
             if not log or str(log.get('marca', '')).lower() != marca_input:
-                requests.post(response_url, json={"text": f"📭 Pedido {id_pedido} não localizado na Logística para a marca {marca_input.upper()}."})
+                requests.post(response_url, json={"text": f"📭 Pedido não localizado na Logística."})
                 return
-            
-            status_simples = "✅ Entregue" if formatar_data_br(log.get('data_entrega')) else "🚚 Em trânsito"
             pedido_resumo = {
-                "id": id_pedido,
-                "marca": str(log.get('marca', marca_input)).upper(),
-                "escola": log.get('cliente', 'Escola não identificada'),
-                "status": status_simples,
-                "produtos": "_Itens de logística (Detalhamento disponível em breve para esta marca)_",
-                "origem_api": False
+                "id": id_pedido, "marca": str(log.get('marca', marca_input)).upper(), "escola": log.get('cliente', 'Escola não identificada'),
+                "status": "Entregue" if formatar_data_br(log.get('data_entrega')) else "Em trânsito",
+                "produtos": "_Itens de logística (Detalhamento disponível em breve)_", "origem_api": False
             }
 
         # --- MONTAGEM DO CARD ---
@@ -145,34 +141,30 @@ def process_command(response_url, text):
                 f"📄 *Nota Fiscal:* {log.get('numero_nota', '—')}"
             ]
             
+            # Datas
             dt_ini_fmt = formatar_data_br(log.get('prev_inicial'))
             dt_ent_fmt = formatar_data_br(log.get('data_entrega'))
             dt_ini_obj = converter_para_objeto_data(log.get('prev_inicial'))
             obs = str(log.get('obs', '')).strip()
 
             if dt_ini_fmt: linhas_log.append(f"📅 *Previsão Inicial:* {dt_ini_fmt}")
-
             if dt_ini_obj and dt_ini_obj < hoje and not dt_ent_fmt:
                 if obs and obs not in ["-", ""]: linhas_log.append(f"⚠️ *Ocorrência:* {obs}")
-                dt_atu_fmt = formatar_data_br(log.get('prev_atualizada'))
-                if dt_atu_fmt:
-                    linhas_log.append(f"📍 *Nova Previsão:* {dt_atu_fmt}")
-                else:
-                    linhas_log.append(f"⏳ *Status:* Aguardando nova previsão de entrega")
+                linhas_log.append(f"📍 *Nova Previsão:* {formatar_data_br(log.get('prev_atualizada')) or 'Aguardando nova previsão'}")
 
-            # --- LÓGICA DE RASTREIO AJUSTADA ---
+            # Rastreio (Ajustado)
             rastreio = str(log.get('cod_rastreio', '')).strip()
-            
             if "CORREIOS" in transp_nome:
                 if not rastreio or rastreio == "-":
                     linhas_log.append("📦 *Rastreio:* ainda não disponível, procure o time de transportes")
                 else:
-                    linhas_log.append(f"📦 *Rastreio:* {rastreio}")
+                    # Link clicável para os Correios como segurança
+                    link_correios = f"https://rastreamento.correios.com.br/app/index.php?codigo={rastreio}"
+                    linhas_log.append(f"📦 *Rastreio:* <{link_correios}|{rastreio}> (clique para abrir)")
+                    
                     status_real = consultar_rastreio_correios(rastreio)
                     if status_real:
-                        linhas_log.append(f"🔍 *Status Correios:* {status_real}")
-            elif rastreio and rastreio != "-":
-                linhas_log.append(f"📦 *Rastreio:* {rastreio}")
+                        linhas_log.append(f"🔍 *Status Real:* {status_real}")
 
             if dt_ent_fmt: linhas_log.append(f"✅ *Entregue em:* {dt_ent_fmt}")
 
