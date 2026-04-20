@@ -14,18 +14,20 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- CONFIGURAÇÕES ---
+# --- CONFIGURAÇÕES DE AMBIENTE ---
 TOKEN_STATICO = os.getenv("ARCO_API_KEY")
 URL_TOKEN = os.getenv("ARCO_URL_TOKEN")
 URL_PEDIDOS = os.getenv("ARCO_URL_PEDIDOS")
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
 
+# URL DA SUA PONTE (GMAIL PESSOAL)
 URL_LOGISTICA = "https://script.google.com/macros/s/AKfycbz-TbuE0FATCGpDumC_RVNiegNFu0J362p7K8GhroRGbBi0f2aHQFPMMyMVv_f4Fh4L/exec"
 TOKEN_LOGISTICA = "ARCO_LOG_2026"
 
-# --- AUXILIARES DE DATA ---
+# --- AUXILIARES DE DATA E RASTREIO ---
 
 def formatar_data_br(data_str):
+    """Converte qualquer formato (ISO, Texto ou Número 46111) para DD/MM/AAAA"""
     if not data_str or str(data_str).strip() in ["-", "None", ""]: return None
     try:
         if str(data_str).replace('.','',1).isdigit():
@@ -41,6 +43,7 @@ def formatar_data_br(data_str):
         except: return str(data_str)
 
 def converter_para_objeto_data(data_str):
+    """Converte para objeto date para cálculos de atraso"""
     if not data_str or str(data_str).strip() in ["-", "None", ""]: return None
     try:
         if str(data_str).replace('.','',1).isdigit():
@@ -50,7 +53,22 @@ def converter_para_objeto_data(data_str):
         try: return datetime.strptime(str(data_str)[:10], '%Y-%m-%d').date()
         except: return None
 
-# --- COMUNICAÇÃO ---
+def consultar_rastreio_correios(codigo):
+    """Consulta o status real nos Correios via API pública (Linketrack)"""
+    if not codigo or len(codigo) < 8: return None
+    try:
+        # API Pública estável para teste
+        url = f"https://api.linketrack.com/track/json?user=teste&token=1abcd02192ee382fe05520fd1120cdc51efad2e8&codigo={codigo}"
+        res = requests.get(url, timeout=8)
+        if res.status_code == 200:
+            eventos = res.json().get('eventos', [])
+            if eventos:
+                ultimo = eventos[0]
+                return f"{ultimo.get('status')} em {ultimo.get('data')} ({ultimo.get('hora')})"
+    except: return None
+    return None
+
+# --- FUNÇÕES DE COMUNICAÇÃO ---
 
 def obter_logistica(id_pedido):
     try:
@@ -74,19 +92,20 @@ def process_command(response_url, text):
         partes = text.strip().split()
         if len(partes) < 2: return
         tipo, marca_input = partes[0].lower(), partes[1].lower()
+        
+        # Inteligência de Ano: se não enviado, assume 2026
         ano, idx = (int(partes[2]), 3) if len(partes) > 2 and partes[2].isdigit() and len(partes[2]) == 4 else (2026, 2)
         id_pedido = partes[idx] if len(partes) > idx else None
 
         if not id_pedido:
-            requests.post(response_url, json={"text": "⚠️ Informe o número do pedido."})
+            requests.post(response_url, json={"text": "⚠️ Por favor, informe o número do pedido."})
             return
 
         marcas_api = ['nave', 'geekie']
         pedido_resumo = {}
         log = obter_logistica(id_pedido)
 
-        # --- LÓGICA DE BUSCA ---
-        
+        # 1. BIFURCAÇÃO: API (Nave/Geekie) vs Planilha (Outras)
         if marca_input in marcas_api:
             tk_res = consultar_arco(URL_TOKEN, {"token": TOKEN_STATICO})
             token = tk_res.get("retorno", {}).get("token")
@@ -107,26 +126,24 @@ def process_command(response_url, text):
                 "codigo_acesso": p.get('CodigoAcesso')
             }
         else:
+            # Fallback para ArcoPlus e outras marcas (Somente Planilha)
             if not log or str(log.get('marca', '')).lower() != marca_input:
                 requests.post(response_url, json={"text": f"📭 Pedido {id_pedido} não localizado na Logística para a marca {marca_input.upper()}."})
                 return
             
-            status_simples = "Entregue" if formatar_data_br(log.get('data_entrega')) else "Em trânsito"
+            status_simples = "✅ Entregue" if formatar_data_br(log.get('data_entrega')) else "🚚 Em trânsito"
             pedido_resumo = {
                 "id": id_pedido,
                 "marca": str(log.get('marca', marca_input)).upper(),
                 "escola": log.get('cliente', 'Escola não identificada'),
                 "status": status_simples,
-                "produtos": "_Itens de logística (Detalhamento não disponível para esta marca)_",
+                "produtos": "_Itens de logística (Detalhamento disponível em breve para esta marca)_",
                 "origem_api": False
             }
 
-        # --- MONTAGEM DO CARD ---
-        
-        # O cabeçalho agora inclui a MARCA de forma explícita
-        header_text = f"🔢 *Pedido: {pedido_resumo['id']}* | 🏷️ *Marca:* {pedido_resumo['marca']}\n🏫 {pedido_resumo['escola']}\n🚚 *Status:* {pedido_resumo['status']}"
-        
-        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": header_text}}]
+        # 2. MONTAGEM DO CARD SLACK
+        header = f"🔢 *Pedido: {pedido_resumo['id']}* | 🏷️ *Marca:* {pedido_resumo['marca']}\n🏫 {pedido_resumo['escola']}\n🚚 *Status:* {pedido_resumo['status']}"
+        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": header}}]
 
         if log:
             hoje = date.today()
@@ -142,6 +159,7 @@ def process_command(response_url, text):
 
             if dt_ini_fmt: linhas_log.append(f"📅 *Previsão Inicial:* {dt_ini_fmt}")
 
+            # Lógica de Atraso e Ocorrência
             if dt_ini_obj and dt_ini_obj < hoje and not dt_ent_fmt:
                 if obs and obs not in ["-", ""]: linhas_log.append(f"⚠️ *Ocorrência:* {obs}")
                 
@@ -151,14 +169,23 @@ def process_command(response_url, text):
                 else:
                     linhas_log.append(f"⏳ *Status:* Aguardando nova previsão de entrega")
 
+            # Rastreio + Consulta em Tempo Real (Correios)
             rastreio = str(log.get('cod_rastreio', '')).strip()
-            if rastreio and rastreio != "-": linhas_log.append(f"📦 *Rastreio:* {rastreio}")
+            if rastreio and rastreio != "-":
+                linhas_log.append(f"📦 *Rastreio:* {rastreio}")
+                if "CORREIOS" in str(log.get('transportador', '')).upper():
+                    status_real = consultar_rastreio_correios(rastreio)
+                    if status_real:
+                        linhas_log.append(f"🔍 *Status Correios:* {status_real}")
+
             if dt_ent_fmt: linhas_log.append(f"✅ *Entregue em:* {dt_ent_fmt}")
 
             blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*Dados de Entrega:*\n" + "\n".join(linhas_log)}})
 
+        # Produtos
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"📦 *Produtos:*\n{pedido_resumo['produtos']}"}})
         
+        # Botões de navegação (Somente se vier da API)
         if pedido_resumo.get('origem_api'):
             val_nav = f"{marca_input}:::{ano}:::{pedido_resumo.get('codigo_acesso') or pedido_resumo['escola']}"
             blocks.append({"type": "actions", "elements": [
@@ -171,7 +198,8 @@ def process_command(response_url, text):
     except Exception as e:
         logger.error(f"Erro: {e}")
 
-# --- SLACK ---
+# --- SEGURANÇA E ROTAS ---
+
 def verify_slack_signature(request):
     sig, ts = request.headers.get("X-Slack-Signature", ""), request.headers.get("X-Slack-Request-Timestamp", "")
     if not sig or not ts: return False
