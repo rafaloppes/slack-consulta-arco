@@ -27,7 +27,6 @@ TOKEN_LOGISTICA = "ARCO_LOG_2026"
 # --- AUXILIARES DE DATA E RASTREIO ---
 
 def formatar_data_br(data_str):
-    """Converte qualquer formato (ISO, Texto ou Número 46111) para DD/MM/AAAA"""
     if not data_str or str(data_str).strip() in ["-", "None", ""]: return None
     try:
         if str(data_str).replace('.','',1).isdigit():
@@ -43,7 +42,6 @@ def formatar_data_br(data_str):
         except: return str(data_str)
 
 def converter_para_objeto_data(data_str):
-    """Converte para objeto date para cálculos de atraso"""
     if not data_str or str(data_str).strip() in ["-", "None", ""]: return None
     try:
         if str(data_str).replace('.','',1).isdigit():
@@ -54,10 +52,8 @@ def converter_para_objeto_data(data_str):
         except: return None
 
 def consultar_rastreio_correios(codigo):
-    """Consulta o status real nos Correios via API pública (Linketrack)"""
     if not codigo or len(codigo) < 8: return None
     try:
-        # API Pública estável para teste
         url = f"https://api.linketrack.com/track/json?user=teste&token=1abcd02192ee382fe05520fd1120cdc51efad2e8&codigo={codigo}"
         res = requests.get(url, timeout=8)
         if res.status_code == 200:
@@ -68,7 +64,7 @@ def consultar_rastreio_correios(codigo):
     except: return None
     return None
 
-# --- FUNÇÕES DE COMUNICAÇÃO ---
+# --- COMUNICAÇÃO ---
 
 def obter_logistica(id_pedido):
     try:
@@ -92,8 +88,6 @@ def process_command(response_url, text):
         partes = text.strip().split()
         if len(partes) < 2: return
         tipo, marca_input = partes[0].lower(), partes[1].lower()
-        
-        # Inteligência de Ano: se não enviado, assume 2026
         ano, idx = (int(partes[2]), 3) if len(partes) > 2 and partes[2].isdigit() and len(partes[2]) == 4 else (2026, 2)
         id_pedido = partes[idx] if len(partes) > idx else None
 
@@ -105,7 +99,6 @@ def process_command(response_url, text):
         pedido_resumo = {}
         log = obter_logistica(id_pedido)
 
-        # 1. BIFURCAÇÃO: API (Nave/Geekie) vs Planilha (Outras)
         if marca_input in marcas_api:
             tk_res = consultar_arco(URL_TOKEN, {"token": TOKEN_STATICO})
             token = tk_res.get("retorno", {}).get("token")
@@ -126,7 +119,6 @@ def process_command(response_url, text):
                 "codigo_acesso": p.get('CodigoAcesso')
             }
         else:
-            # Fallback para ArcoPlus e outras marcas (Somente Planilha)
             if not log or str(log.get('marca', '')).lower() != marca_input:
                 requests.post(response_url, json={"text": f"📭 Pedido {id_pedido} não localizado na Logística para a marca {marca_input.upper()}."})
                 return
@@ -141,12 +133,13 @@ def process_command(response_url, text):
                 "origem_api": False
             }
 
-        # 2. MONTAGEM DO CARD SLACK
+        # --- MONTAGEM DO CARD ---
         header = f"🔢 *Pedido: {pedido_resumo['id']}* | 🏷️ *Marca:* {pedido_resumo['marca']}\n🏫 {pedido_resumo['escola']}\n🚚 *Status:* {pedido_resumo['status']}"
         blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": header}}]
 
         if log:
             hoje = date.today()
+            transp_nome = str(log.get('transportador', '')).upper()
             linhas_log = [
                 f"🚛 *Transportadora:* {log.get('transportador', '—')}",
                 f"📄 *Nota Fiscal:* {log.get('numero_nota', '—')}"
@@ -159,33 +152,34 @@ def process_command(response_url, text):
 
             if dt_ini_fmt: linhas_log.append(f"📅 *Previsão Inicial:* {dt_ini_fmt}")
 
-            # Lógica de Atraso e Ocorrência
             if dt_ini_obj and dt_ini_obj < hoje and not dt_ent_fmt:
                 if obs and obs not in ["-", ""]: linhas_log.append(f"⚠️ *Ocorrência:* {obs}")
-                
                 dt_atu_fmt = formatar_data_br(log.get('prev_atualizada'))
                 if dt_atu_fmt:
                     linhas_log.append(f"📍 *Nova Previsão:* {dt_atu_fmt}")
                 else:
                     linhas_log.append(f"⏳ *Status:* Aguardando nova previsão de entrega")
 
-            # Rastreio + Consulta em Tempo Real (Correios)
+            # --- LÓGICA DE RASTREIO AJUSTADA ---
             rastreio = str(log.get('cod_rastreio', '')).strip()
-            if rastreio and rastreio != "-":
-                linhas_log.append(f"📦 *Rastreio:* {rastreio}")
-                if "CORREIOS" in str(log.get('transportador', '')).upper():
+            
+            if "CORREIOS" in transp_nome:
+                if not rastreio or rastreio == "-":
+                    linhas_log.append("📦 *Rastreio:* ainda não disponível, procure o time de transportes")
+                else:
+                    linhas_log.append(f"📦 *Rastreio:* {rastreio}")
                     status_real = consultar_rastreio_correios(rastreio)
                     if status_real:
                         linhas_log.append(f"🔍 *Status Correios:* {status_real}")
+            elif rastreio and rastreio != "-":
+                linhas_log.append(f"📦 *Rastreio:* {rastreio}")
 
             if dt_ent_fmt: linhas_log.append(f"✅ *Entregue em:* {dt_ent_fmt}")
 
             blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*Dados de Entrega:*\n" + "\n".join(linhas_log)}})
 
-        # Produtos
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"📦 *Produtos:*\n{pedido_resumo['produtos']}"}})
         
-        # Botões de navegação (Somente se vier da API)
         if pedido_resumo.get('origem_api'):
             val_nav = f"{marca_input}:::{ano}:::{pedido_resumo.get('codigo_acesso') or pedido_resumo['escola']}"
             blocks.append({"type": "actions", "elements": [
